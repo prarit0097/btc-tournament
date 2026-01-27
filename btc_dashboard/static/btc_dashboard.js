@@ -155,9 +155,9 @@ function renderPriceRow(primary, nowPriceUsd, nowPriceInr) {
   }
 
   if (isSingle) {
-    document.getElementById('price-now').textContent = '';
+    document.getElementById('price-now').textContent = `BTC Now: ${nowDisplay}`;
     document.getElementById('price-row').innerHTML = `
-      <span class="price-left">BTC Now: ${nowDisplay} | Predicted (${label || `${horizonMin}m`}): ${predDisplay} | Match: ${match}</span>
+      <span class="price-left">Predicted (${label || `${horizonMin}m`}): ${predDisplay} | Match: ${match}</span>
       <span class="price-right"></span>
     `;
     if (lastReady) {
