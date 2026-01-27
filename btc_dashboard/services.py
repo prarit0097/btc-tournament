@@ -30,11 +30,14 @@ from .db import (
 LOGGER = logging.getLogger(__name__)
 
 BINANCE_TICKER_URL = "https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT"
+COINBASE_SPOT_URL = "https://api.coinbase.com/v2/prices/BTC-USD/spot"
+KRAKEN_TICKER_URL = "https://api.kraken.com/0/public/Ticker?pair=XXBTZUSD"
 LEGACY_PREDICTION_HORIZON_MINUTES = 60
 DEFAULT_TIMEFRAMES = ["1m", "3m", "5m", "10m", "15m", "30m", "1h", "2h", "4h"]
 
 _RUN_LOCK = threading.Lock()
 _RUN_STATE = {"running": False, "last_started_at": None}
+_PRICE_CACHE: Dict[str, Any] = {}
 
 
 def _load_registry(path: Path) -> Dict[str, Any]:
@@ -44,12 +47,48 @@ def _load_registry(path: Path) -> Dict[str, Any]:
         return json.load(f)
 
 
-def get_live_price() -> Dict[str, Any]:
+def _fetch_binance_price() -> float:
     resp = requests.get(BINANCE_TICKER_URL, timeout=5)
     resp.raise_for_status()
     data = resp.json()
-    price = float(data.get("price"))
-    return {"price": price, "updated_at": datetime.now(timezone.utc).isoformat()}
+    return float(data.get("price"))
+
+
+def _fetch_coinbase_price() -> float:
+    resp = requests.get(COINBASE_SPOT_URL, timeout=5)
+    resp.raise_for_status()
+    data = resp.json()
+    return float(data["data"]["amount"])
+
+
+def _fetch_kraken_price() -> float:
+    resp = requests.get(KRAKEN_TICKER_URL, timeout=5)
+    resp.raise_for_status()
+    data = resp.json()
+    price = data["result"]["XXBTZUSD"]["c"][0]
+    return float(price)
+
+
+def get_live_price() -> Dict[str, Any]:
+    sources = (
+        ("binance", _fetch_binance_price),
+        ("coinbase", _fetch_coinbase_price),
+        ("kraken", _fetch_kraken_price),
+    )
+    now_iso = datetime.now(timezone.utc).isoformat()
+    for name, fetch in sources:
+        try:
+            price = float(fetch())
+            _PRICE_CACHE.update({"price": price, "updated_at": now_iso, "source": name})
+            return {"price": price, "updated_at": now_iso, "source": name}
+        except Exception:
+            continue
+
+    cached = _PRICE_CACHE.copy()
+    if cached:
+        cached["stale"] = True
+        return cached
+    raise RuntimeError("Price source unavailable")
 
 
 def _parse_iso_utc(value: str) -> datetime:
