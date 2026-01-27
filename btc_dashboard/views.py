@@ -1,0 +1,105 @@
+﻿import json
+import logging
+from pathlib import Path
+
+from django.http import JsonResponse
+from django.shortcuts import render
+from django.views.decorators.csrf import csrf_exempt
+
+from btc_tournament.config import TournamentConfig
+
+from .services import (
+    get_live_price,
+    get_scoreboard,
+    get_tournament_summary,
+    latest_prediction,
+    refresh_prediction,
+    run_tournament_async,
+    run_status,
+)
+
+LOGGER = logging.getLogger(__name__)
+
+
+def _config() -> TournamentConfig:
+    config = TournamentConfig()
+    config.data_dir = Path("data")
+    config.db_path = config.data_dir / "btc_ohlcv.sqlite3"
+    config.registry_path = config.data_dir / "registry.json"
+    return config
+
+
+def dashboard(request):
+    return render(request, "btc_dashboard.html")
+
+
+def api_price(request):
+    try:
+        data = get_live_price()
+        return JsonResponse(data)
+    except Exception as exc:
+        LOGGER.exception("price error")
+        return JsonResponse({"error": str(exc)}, status=502)
+
+
+def api_tournament_summary(request):
+    try:
+        data = get_tournament_summary(_config())
+        return JsonResponse(data)
+    except Exception as exc:
+        LOGGER.exception("summary error")
+        return JsonResponse({"error": str(exc)}, status=500)
+
+
+def api_scoreboard(request):
+    try:
+        limit = int(request.GET.get("limit", 500))
+        data = get_scoreboard(limit)
+        return JsonResponse(data, safe=False)
+    except Exception as exc:
+        LOGGER.exception("scoreboard error")
+        return JsonResponse({"error": str(exc)}, status=500)
+
+
+@csrf_exempt
+def api_tournament_run(request):
+    if request.method != "POST":
+        return JsonResponse({"error": "POST required"}, status=405)
+    try:
+        body = json.loads(request.body.decode("utf-8") or "{}")
+    except Exception:
+        body = {}
+    mode = body.get("run_mode")
+    status = run_tournament_async(_config(), mode)
+    return JsonResponse(status)
+
+
+def api_tournament_run_status(request):
+    try:
+        return JsonResponse(run_status())
+    except Exception as exc:
+        LOGGER.exception("run status error")
+        return JsonResponse({"error": str(exc)}, status=500)
+
+
+def api_prediction_latest(request):
+    try:
+        data = latest_prediction(_config())
+        if not data:
+            return JsonResponse({"error": "no prediction"}, status=404)
+        return JsonResponse(data)
+    except Exception as exc:
+        LOGGER.exception("prediction latest error")
+        return JsonResponse({"error": str(exc)}, status=500)
+
+
+@csrf_exempt
+def api_prediction_refresh(request):
+    if request.method != "POST":
+        return JsonResponse({"error": "POST required"}, status=405)
+    try:
+        data = refresh_prediction(_config())
+        return JsonResponse(data)
+    except Exception as exc:
+        LOGGER.exception("prediction refresh error")
+        return JsonResponse({"error": str(exc)}, status=500)

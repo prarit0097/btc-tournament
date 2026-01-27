@@ -1,0 +1,455 @@
+﻿import json
+import logging
+import os
+from concurrent.futures import ProcessPoolExecutor, TimeoutError
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Dict, List, Tuple
+
+import numpy as np
+import pandas as pd
+
+from .backtest import trading_score
+from .config import TournamentConfig
+from .data_sources import fetch_and_stitch
+from .features import feature_sets, make_supervised
+from .metrics import accuracy, f1_score, mae, pinball_loss, coverage
+from .models_zoo import ModelSpec, build_quantile_bundle, get_candidates
+from .registry import (
+    load_registry,
+    record_model_score,
+    save_registry,
+    stability_penalty,
+    update_champion,
+)
+from .splits import walk_forward_split
+from .storage import Storage
+from btc_dashboard.db import insert_run, insert_scores
+
+def _update_predictions_safe(config) -> None:
+    try:
+        from btc_dashboard.services import update_pending_predictions
+        update_pending_predictions(config)
+    except Exception as exc:
+        LOGGER.info("Prediction match update skipped: %s", exc)
+
+
+LOGGER = logging.getLogger("btc_tournament")
+
+
+def _setup_logging(log_path: Path) -> None:
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(message)s",
+        handlers=[logging.FileHandler(log_path, encoding="utf8"), logging.StreamHandler()],
+    )
+
+
+def _parse_start(config: TournamentConfig) -> datetime:
+    return datetime.fromisoformat(config.start_date_utc).replace(tzinfo=timezone.utc)
+
+
+def _resolve_run_mode(config: TournamentConfig) -> str:
+    env_mode = os.getenv("RUN_MODE")
+    if env_mode:
+        return env_mode
+    return config.run_mode
+
+
+def _prep_data(config: TournamentConfig) -> Tuple[pd.DataFrame, Dict[str, Any]]:
+    storage = Storage(config.db_path, config.ohlcv_table)
+    storage.init_db()
+
+    start = _parse_start(config)
+    stitched, report = fetch_and_stitch(
+        config.symbol,
+        config.yfinance_symbol,
+        start,
+        config.timeframe,
+        config.candle_minutes,
+    )
+    if not stitched.empty:
+        stitched = stitched.set_index("timestamp_utc")
+        storage.upsert(stitched)
+    storage.trim(pd.Timestamp(start))
+    df = storage.load()
+    df = df.loc[df.index >= pd.Timestamp(start)]
+
+    coverage = {
+        "earliest": str(report.earliest) if report.earliest is not None else None,
+        "total_candles": report.total_candles,
+        "missing_intervals": report.missing_intervals,
+        "interval_minutes": report.interval_minutes,
+    }
+    return df, coverage
+
+
+def _build_dataset(df: pd.DataFrame, config: TournamentConfig) -> Tuple[pd.DataFrame, Dict[str, List[str]]]:
+    sup = make_supervised(df, candle_minutes=config.candle_minutes, feature_windows_hours=config.feature_windows)
+    feature_sets_map = feature_sets(sup)
+    return sup, feature_sets_map
+
+
+def _primary_score_direction(acc: float) -> float:
+    return float(acc)
+
+
+def _primary_score_reg(mae_val: float, y_true: np.ndarray) -> float:
+    ref = float(np.mean(np.abs(y_true))) + 1e-9
+    return max(0.0, 1.0 - (mae_val / ref))
+
+
+def _primary_score_range(pinball: float, y_true: np.ndarray, cov: float) -> float:
+    ref = float(np.mean(np.abs(y_true))) + 1e-9
+    pin_score = max(0.0, 1.0 - (pinball / ref))
+    cov_score = 1.0 - abs(cov - 0.8)
+    return 0.5 * pin_score + 0.5 * cov_score
+
+
+def _final_score(trading: float, primary: float, stability: float, config: TournamentConfig) -> float:
+    return 0.5 * trading + 0.3 * primary + config.stability_weight * (1 - stability)
+
+
+def _fit_predict_direction(spec: ModelSpec, X_train, y_train, X_val):
+    model = spec.model
+    model.fit(X_train, y_train)
+    y_pred = model.predict(X_val)
+    return model, y_pred
+
+
+def _fit_predict_reg(spec: ModelSpec, X_train, y_train, X_val):
+    model = spec.model
+    model.fit(X_train, y_train)
+    y_pred = model.predict(X_val)
+    return model, y_pred
+
+
+def _fit_predict_range(spec: ModelSpec, X_train, y_train, X_val):
+    quantiles = (0.1, 0.5, 0.9)
+    model = build_quantile_bundle(spec, quantiles)
+    model.fit(X_train, y_train)
+    y_pred = model.predict(X_val)
+    return model, y_pred
+
+
+def _evaluate_candidate(args: Tuple[ModelSpec, str, str, pd.DataFrame, pd.DataFrame, List[str], TournamentConfig]):
+    spec, task, feature_set_id, train_df, val_df, feature_cols, config = args
+    X_train = train_df[feature_cols]
+    X_val = val_df[feature_cols]
+
+    if task == "direction":
+        y_train = train_df["y_dir"].values
+        y_val = val_df["y_dir"].values
+        model, y_pred = _fit_predict_direction(spec, X_train, y_train, X_val)
+        acc = accuracy(y_val, y_pred)
+        f1 = f1_score(y_val, y_pred)
+        log_ret = val_df["y_ret"].values
+        positions = (y_pred > 0).astype(int)
+        net, mdd, trading = trading_score(positions, log_ret, config.fee_slippage)
+        primary = _primary_score_direction(acc)
+        return {
+            "spec": spec,
+            "feature_set_id": feature_set_id,
+            "metrics": {"accuracy": acc, "f1": f1, "net": net, "mdd": mdd},
+            "primary": primary,
+            "trading": trading,
+            "y_pred": y_pred,
+            "model": model,
+        }
+
+    if task == "return":
+        y_train = train_df["y_ret"].values
+        y_val = val_df["y_ret"].values
+        model, y_pred = _fit_predict_reg(spec, X_train, y_train, X_val)
+        mae_val = mae(y_val, y_pred)
+        dir_acc = accuracy((y_val > 0).astype(int), (y_pred > 0).astype(int))
+        log_ret = y_val
+        positions = (y_pred > 0).astype(int)
+        net, mdd, trading = trading_score(positions, log_ret, config.fee_slippage)
+        primary = _primary_score_reg(mae_val, y_val)
+        return {
+            "spec": spec,
+            "feature_set_id": feature_set_id,
+            "metrics": {"mae": mae_val, "dir_acc": dir_acc, "net": net, "mdd": mdd},
+            "primary": primary,
+            "trading": trading,
+            "y_pred": y_pred,
+            "model": model,
+        }
+
+    y_train = train_df["y_ret"].values
+    y_val = val_df["y_ret"].values
+    model, y_pred = _fit_predict_range(spec, X_train, y_train, X_val)
+    p10, p50, p90 = y_pred[:, 0], y_pred[:, 1], y_pred[:, 2]
+    cov = coverage(y_val, p10, p90)
+    pin = (
+        pinball_loss(y_val, p10, 0.1)
+        + pinball_loss(y_val, p50, 0.5)
+        + pinball_loss(y_val, p90, 0.9)
+    ) / 3.0
+    positions = (p50 > 0).astype(int)
+    net, mdd, trading = trading_score(positions, y_val, config.fee_slippage)
+    primary = _primary_score_range(pin, y_val, cov)
+    return {
+        "spec": spec,
+        "feature_set_id": feature_set_id,
+        "metrics": {"coverage": cov, "pinball": pin, "net": net, "mdd": mdd},
+        "primary": primary,
+        "trading": trading,
+        "y_pred": y_pred,
+        "model": model,
+    }
+
+
+def _model_id(spec: ModelSpec, feature_set_id: str) -> str:
+    return f"{spec.name}__{feature_set_id}"
+
+
+def _family_label(family: str) -> str:
+    mapping = {
+        "logreg": "linear",
+        "sgd": "linear",
+        "rf": "forest",
+        "et": "forest",
+        "gb": "boosting",
+        "hgb": "boosting",
+        "xgb": "boosting",
+        "lgb": "boosting",
+        "cat": "boosting",
+        "gbr_q": "boosting",
+        "hgb_q": "boosting",
+        "lgb_q": "boosting",
+        "naive": "baseline",
+        "ema": "baseline",
+        "bias": "baseline",
+        "zero": "baseline",
+        "dl": "deep",
+    }
+    return mapping.get(family, family)
+
+
+def _filter_by_run_mode(candidates: List[Tuple[ModelSpec, str, List[str]]], run_mode: str) -> List[Tuple[ModelSpec, str, List[str]]]:
+    groups = {
+        "hourly": {"fast"},
+        "six_hourly": {"fast", "medium"},
+        "daily": {"fast", "medium", "heavy"},
+        "all": {"fast", "medium", "heavy"},
+    }
+    allowed = groups.get(run_mode, {"fast"})
+    filtered = []
+    for spec, fs_id, cols in candidates:
+        group = spec.meta.get("group", "fast")
+        if group in allowed:
+            filtered.append((spec, fs_id, cols))
+    return filtered
+
+
+def _cap_candidates(
+    candidates: List[Tuple[ModelSpec, str, List[str]]],
+    max_total: int,
+    seed: int,
+) -> List[Tuple[ModelSpec, str, List[str]]]:
+    rng = np.random.default_rng(seed)
+    if len(candidates) <= max_total:
+        return candidates
+    idx = rng.choice(len(candidates), size=max_total, replace=False)
+    return [candidates[i] for i in idx]
+
+
+def run_tournament(config: TournamentConfig) -> Dict[str, Any]:
+    _setup_logging(config.log_path)
+    LOGGER.info("Starting tournament")
+
+    df, coverage = _prep_data(config)
+    if df.empty:
+        raise RuntimeError("No data available")
+
+    sup, feature_sets_map = _build_dataset(df, config)
+    split = walk_forward_split(sup, config.train_days, config.val_hours, config.test_hours, config.use_test)
+
+    registry = load_registry(config.registry_path)
+
+    results: Dict[str, Any] = {"coverage": coverage}
+    run_at = datetime.now(timezone.utc).isoformat()
+
+    run_mode = _resolve_run_mode(config)
+
+    per_task_candidates: Dict[str, List[Tuple[ModelSpec, str, List[str]]]] = {}
+    for task in ["direction", "return", "range"]:
+        specs = get_candidates(task, config.max_candidates_per_target, config.enable_dl)
+        candidates = []
+        for fs_id, cols in feature_sets_map.items():
+            if not cols:
+                continue
+            for spec in specs:
+                candidates.append((spec, fs_id, cols))
+        candidates = _filter_by_run_mode(candidates, run_mode)
+        # Drop candidates whose required features are missing in feature set
+        filtered = []
+        for spec, fs_id, cols in candidates:
+            req = spec.meta.get("required_features", [])
+            if all(r in cols for r in req):
+                filtered.append((spec, fs_id, cols))
+        candidates = filtered
+        if len(candidates) > config.max_candidates_per_target:
+            candidates = _cap_candidates(candidates, config.max_candidates_per_target, config.random_seed)
+        per_task_candidates[task] = candidates
+
+    all_candidates = [c for task in per_task_candidates for c in per_task_candidates[task]]
+    if len(all_candidates) > config.max_candidates_total:
+        capped = _cap_candidates(all_candidates, config.max_candidates_total, config.random_seed)
+        per_task_candidates = {"direction": [], "return": [], "range": []}
+        for spec, fs_id, cols in capped:
+            per_task_candidates[spec.task].append((spec, fs_id, cols))
+
+    candidate_count_total = sum(len(per_task_candidates[t]) for t in per_task_candidates)
+    scoreboard_rows = []
+
+    for task in ["direction", "return", "range"]:
+        candidates = per_task_candidates.get(task, [])
+        LOGGER.info("Task %s candidates %d", task, len(candidates))
+
+        jobs = [(spec, task, fs_id, split.train, split.val, cols, config) for spec, fs_id, cols in candidates]
+        task_results = []
+
+        use_workers = config.max_workers
+        if any(spec.name.startswith("lgb_") for spec, _, _ in candidates):
+            use_workers = 1
+
+        if use_workers > 1:
+            with ProcessPoolExecutor(max_workers=use_workers) as ex:
+                futures = {ex.submit(_evaluate_candidate, j): j[0] for j in jobs}
+                for fut in futures:
+                    spec = futures[fut]
+                    try:
+                        res = fut.result(timeout=config.model_timeout_sec)
+                        task_results.append(res)
+                    except TimeoutError:
+                        LOGGER.info("Timeout: %s", spec.name)
+                    except Exception as exc:
+                        LOGGER.warning("Failed: %s %s", spec.name, exc)
+        else:
+            for j in jobs:
+                spec = j[0]
+                try:
+                    res = _evaluate_candidate(j)
+                    task_results.append(res)
+                except Exception as exc:
+                    LOGGER.warning("Failed: %s %s", spec.name, exc)
+
+        if not task_results:
+            LOGGER.warning("No valid models for %s", task)
+            continue
+
+        for r in task_results:
+            spec = r["spec"]
+            family = spec.meta.get("family", spec.name)
+            stab = stability_penalty(registry, family)
+            final = _final_score(r["trading"], r["primary"], stab, config)
+            r["final_score"] = final
+            r["stability"] = stab
+            r["family"] = family
+
+        task_results.sort(key=lambda x: x["final_score"], reverse=True)
+        best = task_results[0]
+
+        best_spec = best["spec"]
+        best_fs_id = best["feature_set_id"]
+        model_id = _model_id(best_spec, best_fs_id)
+
+        record_model_score(registry, best["family"], best["final_score"], config.history_keep)
+
+        artifacts_dir = config.data_dir / "models" / task
+        artifacts_dir.mkdir(parents=True, exist_ok=True)
+        ts = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+        model_path = artifacts_dir / f"{model_id}_{ts}.pkl"
+        meta_path = artifacts_dir / f"{model_id}_{ts}.json"
+
+        try:
+            import joblib
+            joblib.dump(best["model"], model_path)
+            meta = {
+                "model_id": model_id,
+                "task": task,
+                "timestamp": ts,
+                "feature_set_id": best_fs_id,
+                "feature_cols": feature_sets_map.get(best_fs_id, []),
+                "metrics": best["metrics"],
+                "final_score": best["final_score"],
+            }
+            with meta_path.open("w", encoding="utf8") as f:
+                json.dump(meta, f, indent=2)
+        except Exception as exc:
+            LOGGER.warning("Failed to save model artifacts: %s", exc)
+
+        challenger = {
+            "model_id": model_id,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "final_score": best["final_score"],
+            "metrics": best["metrics"],
+            "val_points": int(len(split.val)),
+            "model_path": str(model_path),
+            "feature_cols": feature_sets_map.get(best_fs_id, []),
+            "feature_set_id": best_fs_id,
+            "family": best["family"],
+        }
+
+        decision = update_champion(
+            registry,
+            task,
+            challenger,
+            config.min_val_points,
+            config.champion_margin,
+            config.champion_margin_override,
+            config.champion_cooldown_hours,
+        )
+
+        registry["history"][task].append({
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "best": challenger,
+            "decision": decision.reason,
+            "coverage": coverage,
+            "run_mode": run_mode,
+        })
+        registry["history"][task] = registry["history"][task][-config.history_keep:]
+
+        results[task] = {
+            "best": challenger,
+            "decision": decision.reason,
+            "top_scores": [
+                {"model_id": _model_id(r["spec"], r["feature_set_id"]), "final_score": r["final_score"]}
+                for r in task_results[:5]
+            ],
+        }
+
+        for idx, r in enumerate(task_results, start=1):
+            metric_name = "accuracy" if task == "direction" else "MAE" if task == "return" else "pinball"
+            metric_value = r["metrics"].get("accuracy") if task == "direction" else r["metrics"].get("mae") if task == "return" else r["metrics"].get("pinball")
+            model_name = r["spec"].model.__class__.__name__ if hasattr(r["spec"], "model") else r["spec"].name
+            scoreboard_rows.append(
+                {
+                    "rank": idx,
+                    "target": task,
+                    "feature_set": r.get("feature_set_id"),
+                    "model_name": model_name,
+                    "family": _family_label(r.get("family", "")),
+                    "final_score": r.get("final_score"),
+                    "primary_metric_name": metric_name,
+                    "primary_metric_value": metric_value,
+                    "trading_score": r.get("trading"),
+                    "stability_penalty": r.get("stability"),
+                    "is_champion": idx == 1,
+                    "run_at": run_at,
+                }
+            )
+
+    save_registry(config.registry_path, registry)
+    try:
+        run_id = insert_run(run_at, run_mode, candidate_count_total)
+        insert_scores(run_id, scoreboard_rows)
+    except Exception as exc:
+        LOGGER.warning("Failed to store scoreboard: %s", exc)
+    _update_predictions_safe(config)
+    LOGGER.info("Tournament complete")
+    return results

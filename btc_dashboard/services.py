@@ -1,0 +1,424 @@
+import json
+import logging
+import os
+import threading
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+import numpy as np
+import pandas as pd
+import requests
+
+from btc_tournament.config import TournamentConfig, _timeframe_to_minutes
+from btc_tournament.data_sources import fetch_and_stitch
+from btc_tournament.features import make_supervised
+from btc_tournament.storage import Storage
+
+from .db import (
+    ensure_tables,
+    get_latest_prediction_for_timeframe,
+    get_latest_ready_prediction_for_timeframe,
+    get_latest_run,
+    get_ohlcv_close_at,
+    get_scores,
+    insert_prediction,
+    list_pending_predictions,
+    update_prediction,
+)
+
+LOGGER = logging.getLogger(__name__)
+
+BINANCE_TICKER_URL = "https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT"
+LEGACY_PREDICTION_HORIZON_MINUTES = 60
+DEFAULT_TIMEFRAMES = ["1m", "3m", "5m", "10m", "15m", "30m", "1h", "2h", "4h"]
+
+_RUN_LOCK = threading.Lock()
+_RUN_STATE = {"running": False, "last_started_at": None}
+
+
+def _load_registry(path: Path) -> Dict[str, Any]:
+    if not path.exists():
+        return {}
+    with path.open("r", encoding="utf8") as f:
+        return json.load(f)
+
+
+def get_live_price() -> Dict[str, Any]:
+    resp = requests.get(BINANCE_TICKER_URL, timeout=5)
+    resp.raise_for_status()
+    data = resp.json()
+    price = float(data.get("price"))
+    return {"price": price, "updated_at": datetime.now(timezone.utc).isoformat()}
+
+
+def _parse_iso_utc(value: str) -> datetime:
+    try:
+        ts = datetime.fromisoformat(value)
+    except ValueError:
+        if value.endswith("Z"):
+            ts = datetime.fromisoformat(value[:-1])
+        else:
+            raise
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    return ts
+
+
+def _align_to_interval(ts: datetime, minutes: int) -> datetime:
+    if minutes <= 0:
+        return ts
+    minute = (ts.minute // minutes) * minutes
+    return ts.replace(minute=minute, second=0, microsecond=0)
+
+
+def _resolve_feature_cols(model, fallback_cols: List[str]) -> List[str]:
+    if hasattr(model, "feature_name_"):
+        return list(model.feature_name_)
+    if hasattr(model, "feature_names_in_"):
+        return list(model.feature_names_in_)
+    return list(fallback_cols)
+
+
+def _load_latest_dataset(config: TournamentConfig) -> pd.DataFrame:
+    storage = Storage(config.db_path, config.ohlcv_table)
+    storage.init_db()
+    df = storage.load()
+    return df
+
+
+def _ensure_recent_data(config: TournamentConfig, days: int = 14) -> pd.DataFrame:
+    df = _load_latest_dataset(config)
+    if not df.empty:
+        return df
+    try:
+        end = datetime.now(timezone.utc)
+        start = end - timedelta(days=days)
+        fetched, _ = fetch_and_stitch(
+            config.symbol,
+            config.yfinance_symbol,
+            start,
+            config.timeframe,
+            config.candle_minutes,
+        )
+        if not fetched.empty:
+            fetched = fetched.set_index("timestamp_utc")
+            Storage(config.db_path, config.ohlcv_table).upsert(fetched)
+        return _load_latest_dataset(config)
+    except Exception:
+        return df
+
+
+def _parse_timeframes(value: Optional[str]) -> List[str]:
+    if not value:
+        return list(DEFAULT_TIMEFRAMES)
+    tokens: List[str] = []
+    for part in value.replace("|", ",").replace(";", ",").split(","):
+        token = part.strip()
+        if token:
+            tokens.append(token)
+    if not tokens:
+        return list(DEFAULT_TIMEFRAMES)
+    seen = set()
+    ordered: List[str] = []
+    for token in tokens:
+        if token in seen:
+            continue
+        seen.add(token)
+        ordered.append(token)
+    return ordered
+
+
+def get_timeframes(config: TournamentConfig) -> List[str]:
+    env_list = os.getenv("BTC_TIMEFRAMES")
+    if env_list:
+        return _parse_timeframes(env_list)
+    return list(DEFAULT_TIMEFRAMES)
+
+
+def get_primary_timeframe(config: TournamentConfig) -> str:
+    frames = get_timeframes(config)
+    return frames[0] if frames else config.timeframe
+
+
+def _config_for_timeframe(base: TournamentConfig, timeframe: str) -> TournamentConfig:
+    cfg = TournamentConfig()
+    cfg.__dict__.update(base.__dict__)
+    cfg.timeframe = timeframe
+    cfg.candle_minutes = _timeframe_to_minutes(timeframe, base.candle_minutes)
+    if cfg.candle_minutes == 60:
+        cfg.ohlcv_table = "ohlcv"
+    else:
+        cfg.ohlcv_table = f"ohlcv_{cfg.candle_minutes}m"
+    cfg.registry_path = base.data_dir / f"registry_{cfg.candle_minutes}m.json"
+    cfg.log_path = base.data_dir / f"tournament_{cfg.candle_minutes}m.log"
+    return cfg
+
+
+def get_tournament_summary(config: TournamentConfig) -> Dict[str, Any]:
+    primary_tf = get_primary_timeframe(config)
+    tf_cfg = _config_for_timeframe(config, primary_tf)
+    reg = _load_registry(tf_cfg.registry_path)
+    latest_run = get_latest_run()
+    candidate_count = latest_run["candidate_count"] if latest_run else 0
+    return {
+        "last_run_at": latest_run["run_at"] if latest_run else None,
+        "run_mode": latest_run["run_mode"] if latest_run else None,
+        "candidate_count": candidate_count,
+        "champions": reg.get("champions", {}),
+    }
+
+
+def get_scoreboard(limit: int = 500) -> List[Dict[str, Any]]:
+    latest = get_latest_run()
+    if not latest:
+        return []
+    return get_scores(latest["id"], limit)
+
+
+def update_pending_predictions(config: TournamentConfig) -> None:
+    ensure_tables()
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=1)
+    cutoff_iso = cutoff.isoformat()
+    pending = list_pending_predictions(cutoff_iso)
+    if not pending:
+        return
+
+    for p in pending:
+        pred_at = _parse_iso_utc(p["predicted_at"])
+        horizon_min = p.get("prediction_horizon_min") or p.get("timeframe_minutes") or LEGACY_PREDICTION_HORIZON_MINUTES
+        if datetime.now(timezone.utc) - pred_at < timedelta(minutes=int(horizon_min)):
+            continue
+        tf_minutes = p.get("timeframe_minutes") or horizon_min
+        anchor = _align_to_interval(pred_at, int(tf_minutes))
+        target_ts = anchor + timedelta(minutes=int(horizon_min))
+        target_iso = target_ts.isoformat()
+
+        table = "ohlcv" if int(tf_minutes) == 60 else f"ohlcv_{int(tf_minutes)}m"
+        actual = get_ohlcv_close_at(target_iso, table=table)
+        if actual is None:
+            try:
+                actual = get_live_price()["price"]
+            except Exception:
+                continue
+        match = 100.0 - (abs(p["predicted_price"] - actual) / actual) * 100.0
+        match = max(0.0, min(100.0, match))
+        update_prediction(p["id"], actual, match, "ready")
+
+
+def _predict_return_from_champion(config: TournamentConfig, latest_row: pd.DataFrame) -> Optional[Dict[str, Any]]:
+    reg = _load_registry(config.registry_path)
+    champ = reg.get("champions", {}).get("return")
+    if not champ:
+        return None
+
+    model_path = champ.get("model_path")
+    if not model_path:
+        return None
+
+    import joblib
+
+    model = joblib.load(model_path)
+    feature_cols = _resolve_feature_cols(model, champ.get("feature_cols", []))
+    X = latest_row.reindex(columns=feature_cols, fill_value=0.0)
+    pred = float(model.predict(X)[0])
+    return {
+        "predicted_return": pred,
+        "model_name": champ.get("model_id", "return_champion"),
+        "feature_set": champ.get("feature_set_id"),
+    }
+
+
+def _predict_return_from_direction(config: TournamentConfig, latest_row: pd.DataFrame, df: pd.DataFrame) -> Optional[Dict[str, Any]]:
+    reg = _load_registry(config.registry_path)
+    champ = reg.get("champions", {}).get("direction")
+    if not champ:
+        return None
+
+    model_path = champ.get("model_path")
+    if not model_path:
+        return None
+
+    import joblib
+
+    model = joblib.load(model_path)
+    feature_cols = _resolve_feature_cols(model, champ.get("feature_cols", []))
+    X = latest_row.reindex(columns=feature_cols, fill_value=0.0)
+    direction = int(model.predict(X)[0])
+
+    recent = df["close"].pct_change().dropna().tail(24)
+    avg_move = float(np.abs(recent).mean()) if not recent.empty else 0.002
+    sign = 1.0 if direction == 1 else -1.0
+    predicted_return = np.log(1 + avg_move * sign)
+
+    return {
+        "predicted_return": float(predicted_return),
+        "model_name": champ.get("model_id", "direction_champion"),
+        "feature_set": champ.get("feature_set_id"),
+    }
+
+
+def _cooldown_minutes(horizon_min: int) -> int:
+    return max(1, min(15, int(horizon_min / 2)))
+
+
+def _decorate_last_ready(last_ready: Optional[Dict[str, Any]], horizon_min: int) -> Optional[Dict[str, Any]]:
+    if not last_ready:
+        return None
+    try:
+        pred_at = _parse_iso_utc(last_ready["predicted_at"])
+        delta_min = int(last_ready.get("prediction_horizon_min") or horizon_min)
+        last_ready["actual_at"] = (pred_at + timedelta(minutes=delta_min)).isoformat()
+    except Exception:
+        last_ready["actual_at"] = None
+    last_ready["actual_price"] = last_ready.get("actual_price_1h")
+    return last_ready
+
+
+def refresh_prediction(config: TournamentConfig) -> Dict[str, Any]:
+    if _RUN_STATE.get("running"):
+        return latest_prediction(config, update_pending=False)
+    ensure_tables()
+    update_pending_predictions(config)
+    predictions: List[Dict[str, Any]] = []
+
+    try:
+        price_info = get_live_price()
+        live_price = price_info["price"]
+    except Exception:
+        live_price = None
+
+    latest_run = get_latest_run()
+    run_id = latest_run["id"] if latest_run else None
+
+    for timeframe in get_timeframes(config):
+        tf_cfg = _config_for_timeframe(config, timeframe)
+        horizon_min = max(1, tf_cfg.candle_minutes)
+        latest = get_latest_prediction_for_timeframe(timeframe)
+        if latest:
+            pred_at = _parse_iso_utc(latest["predicted_at"])
+            cooldown = _cooldown_minutes(horizon_min)
+            if datetime.now(timezone.utc) - pred_at < timedelta(minutes=cooldown):
+                latest["last_ready"] = _decorate_last_ready(
+                    get_latest_ready_prediction_for_timeframe(timeframe),
+                    horizon_min,
+                )
+                predictions.append(latest)
+                continue
+
+        if live_price is None:
+            predictions.append(
+                {
+                    "timeframe": timeframe,
+                    "timeframe_minutes": horizon_min,
+                    "prediction_horizon_min": horizon_min,
+                    "status": "no_price",
+                }
+            )
+            continue
+
+        df = _ensure_recent_data(tf_cfg)
+        sup = make_supervised(df, candle_minutes=tf_cfg.candle_minutes, feature_windows_hours=tf_cfg.feature_windows)
+        if sup.empty:
+            predictions.append(
+                {
+                    "timeframe": timeframe,
+                    "timeframe_minutes": horizon_min,
+                    "prediction_horizon_min": horizon_min,
+                    "status": "no_data",
+                }
+            )
+            continue
+        latest_row = sup.iloc[-1:]
+
+        pred = _predict_return_from_champion(tf_cfg, latest_row)
+        prediction_target = "return"
+        if pred is None:
+            pred = _predict_return_from_direction(tf_cfg, latest_row, df)
+            prediction_target = "direction"
+        if pred is None:
+            predictions.append(
+                {
+                    "timeframe": timeframe,
+                    "timeframe_minutes": horizon_min,
+                    "prediction_horizon_min": horizon_min,
+                    "status": "no_champion",
+                }
+            )
+            continue
+
+        predicted_return = float(pred["predicted_return"])
+        predicted_price = float(live_price) * float(np.exp(predicted_return))
+
+        record = {
+            "predicted_at": datetime.now(timezone.utc).isoformat(),
+            "current_price": live_price,
+            "predicted_return": predicted_return,
+            "predicted_price": predicted_price,
+            "actual_price_1h": None,
+            "match_percent": None,
+            "status": "pending",
+            "model_name": pred["model_name"],
+            "feature_set": pred["feature_set"],
+            "run_id": run_id,
+            "prediction_target": prediction_target,
+            "prediction_horizon_min": horizon_min,
+            "timeframe": timeframe,
+            "timeframe_minutes": horizon_min,
+        }
+        pred_id = insert_prediction(record)
+        record["id"] = pred_id
+        predictions.append(record)
+
+    return {"predictions": predictions}
+
+
+def latest_prediction(config: TournamentConfig, update_pending: bool = True) -> Optional[Dict[str, Any]]:
+    if update_pending and not _RUN_STATE.get("running"):
+        update_pending_predictions(config)
+    predictions: List[Dict[str, Any]] = []
+    for timeframe in get_timeframes(config):
+        latest = get_latest_prediction_for_timeframe(timeframe)
+        horizon_min = _timeframe_to_minutes(timeframe, config.candle_minutes)
+        if latest:
+            latest["last_ready"] = _decorate_last_ready(
+                get_latest_ready_prediction_for_timeframe(timeframe),
+                horizon_min,
+            )
+            predictions.append(latest)
+        else:
+            predictions.append(
+                {
+                    "timeframe": timeframe,
+                    "timeframe_minutes": horizon_min,
+                    "prediction_horizon_min": horizon_min,
+                    "status": "no_prediction",
+                }
+            )
+    return {"predictions": predictions}
+
+
+def run_status() -> Dict[str, Any]:
+    return dict(_RUN_STATE)
+
+
+def _run_tournament_thread(config: TournamentConfig) -> None:
+    try:
+        from btc_tournament.multi_timeframe import run_multi_timeframe_tournament
+        run_multi_timeframe_tournament(config)
+    finally:
+        with _RUN_LOCK:
+            _RUN_STATE["running"] = False
+
+
+def run_tournament_async(config: TournamentConfig, run_mode: Optional[str]) -> Dict[str, Any]:
+    with _RUN_LOCK:
+        if _RUN_STATE["running"]:
+            return {"status": "already_running", **_RUN_STATE}
+        if run_mode:
+            config.run_mode = run_mode
+        _RUN_STATE["running"] = True
+        _RUN_STATE["last_started_at"] = datetime.now(timezone.utc).isoformat()
+        t = threading.Thread(target=_run_tournament_thread, args=(config,), daemon=True)
+        t.start()
+    return {"status": "started", **_RUN_STATE}

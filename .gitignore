@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyd
+*.so
+*.egg-info/
+.pytest_cache/
+
+# Virtual env
+.venv/
+
+# Env files
+.env
+
+# Django
+*.sqlite3
+
+# Data/artifacts
+/data/
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
