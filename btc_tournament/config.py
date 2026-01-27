@@ -78,6 +78,9 @@ class TournamentConfig:
         env_workers = os.getenv("MAX_WORKERS")
         if env_workers and env_workers.isdigit():
             self.max_workers = int(env_workers)
+        env_dl = os.getenv("ENABLE_DL")
+        if env_dl is not None:
+            self.enable_dl = env_dl.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _timeframe_to_minutes(timeframe: str, fallback: int) -> int:
