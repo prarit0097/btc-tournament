@@ -30,6 +30,8 @@ from .db import (
 LOGGER = logging.getLogger(__name__)
 
 BINANCE_TICKER_URL = "https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT"
+COINBASE_FX_URL = "https://api.coinbase.com/v2/exchange-rates?currency=USD"
+FX_CACHE_SECONDS = int(os.getenv("FX_CACHE_SECONDS", "60"))
 COINBASE_SPOT_URL = "https://api.coinbase.com/v2/prices/BTC-USD/spot"
 KRAKEN_TICKER_URL = "https://api.kraken.com/0/public/Ticker?pair=XXBTZUSD"
 LEGACY_PREDICTION_HORIZON_MINUTES = 60
@@ -38,6 +40,7 @@ DEFAULT_TIMEFRAMES = ["1m", "3m", "5m", "10m", "15m", "30m", "1h", "2h", "4h"]
 _RUN_LOCK = threading.Lock()
 _RUN_STATE = {"running": False, "last_started_at": None}
 _PRICE_CACHE: Dict[str, Any] = {}
+_FX_CACHE: Dict[str, Any] = {}
 
 
 def _load_registry(path: Path) -> Dict[str, Any]:
@@ -69,24 +72,89 @@ def _fetch_kraken_price() -> float:
     return float(price)
 
 
+def _fetch_fx_coinbase() -> float:
+    resp = requests.get(COINBASE_FX_URL, timeout=5)
+    resp.raise_for_status()
+    data = resp.json()
+    return float(data["data"]["rates"]["INR"])
+
+
+def _get_fx_rate() -> Dict[str, Any]:
+    now = datetime.now(timezone.utc)
+    cached = _FX_CACHE.copy()
+    if cached:
+        expires_at = cached.get("expires_at")
+        if isinstance(expires_at, datetime) and expires_at > now:
+            return {
+                "rate": cached.get("rate"),
+                "updated_at": cached.get("updated_at"),
+                "source": cached.get("source"),
+                "stale": False,
+            }
+
+    try:
+        rate = _fetch_fx_coinbase()
+        updated_at = now.isoformat()
+        _FX_CACHE.update(
+            {
+                "rate": rate,
+                "updated_at": updated_at,
+                "source": "coinbase",
+                "expires_at": now + timedelta(seconds=FX_CACHE_SECONDS),
+            }
+        )
+        return {"rate": rate, "updated_at": updated_at, "source": "coinbase", "stale": False}
+    except Exception:
+        if cached.get("rate") is not None:
+            return {
+                "rate": cached.get("rate"),
+                "updated_at": cached.get("updated_at"),
+                "source": cached.get("source"),
+                "stale": True,
+            }
+        raise
+
+
 def get_live_price() -> Dict[str, Any]:
     sources = (
         ("binance", _fetch_binance_price),
         ("coinbase", _fetch_coinbase_price),
         ("kraken", _fetch_kraken_price),
     )
-    now_iso = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(timezone.utc)
+    now_iso = now.isoformat()
     for name, fetch in sources:
         try:
             price = float(fetch())
             _PRICE_CACHE.update({"price": price, "updated_at": now_iso, "source": name})
-            return {"price": price, "updated_at": now_iso, "source": name}
+            result: Dict[str, Any] = {"price": price, "updated_at": now_iso, "source": name}
+            try:
+                fx = _get_fx_rate()
+                if fx.get("rate"):
+                    result["price_inr"] = price * float(fx["rate"])
+                    result["fx_rate"] = fx["rate"]
+                    result["fx_updated_at"] = fx["updated_at"]
+                    result["fx_source"] = fx["source"]
+                    result["fx_stale"] = fx["stale"]
+            except Exception:
+                pass
+            return result
         except Exception:
             continue
 
     cached = _PRICE_CACHE.copy()
     if cached:
         cached["stale"] = True
+        try:
+            fx = _get_fx_rate()
+            if fx.get("rate"):
+                cached["price_inr"] = cached["price"] * float(fx["rate"])
+                cached["fx_rate"] = fx["rate"]
+                cached["fx_updated_at"] = fx["updated_at"]
+                cached["fx_source"] = fx["source"]
+                cached["fx_stale"] = fx["stale"]
+        except Exception:
+            pass
         return cached
     raise RuntimeError("Price source unavailable")
 

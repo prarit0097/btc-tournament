@@ -1,6 +1,10 @@
 let scoreboardCache = [];
 let lastPrediction = null;
 let lastNowPrice = null;
+let lastNowPriceInr = null;
+let lastFxRate = null;
+let lastFxUpdatedAt = null;
+let lastFxSource = null;
 let lastForcedRefreshAt = 0;
 
 async function getJSON(url, options = {}) {
@@ -12,6 +16,31 @@ async function getJSON(url, options = {}) {
 function fmt(num, digits = 2) {
   if (num === null || num === undefined || Number.isNaN(num)) return '--';
   return Number(num).toLocaleString('en-US', { maximumFractionDigits: digits });
+}
+
+function fmtUsd(num) {
+  if (num === null || num === undefined || Number.isNaN(num)) return '--';
+  return `$${fmt(num, 2)}`;
+}
+
+function fmtInr(num) {
+  if (num === null || num === undefined || Number.isNaN(num)) return '--';
+  return `INR ${fmt(num, 2)}`;
+}
+
+function formatDualPrice(usd, fxRate) {
+  if (usd === null || usd === undefined || Number.isNaN(usd)) return '--';
+  if (fxRate) {
+    return `${fmtInr(usd * fxRate)} (${fmtUsd(usd)})`;
+  }
+  return fmtUsd(usd);
+}
+
+function formatNowPrice(usd, inr, fxRate) {
+  if (inr !== null && inr !== undefined && !Number.isNaN(inr)) {
+    return `${fmtInr(inr)}${usd ? ` (${fmtUsd(usd)})` : ''}`;
+  }
+  return formatDualPrice(usd, fxRate);
 }
 
 function fmtDateTime(iso) {
@@ -92,8 +121,8 @@ function statusText(pred) {
   return '--';
 }
 
-function renderPriceRow(primary, nowPrice) {
-  const nowDisplay = nowPrice ? `$${fmt(nowPrice, 2)}` : '--';
+function renderPriceRow(primary, nowPriceUsd, nowPriceInr) {
+  const nowDisplay = formatNowPrice(nowPriceUsd, nowPriceInr, lastFxRate);
   const predList = document.getElementById('pred-list');
   const lastLine = document.getElementById('pred-last-line');
   const actualLine = document.getElementById('pred-actual-line');
@@ -108,16 +137,18 @@ function renderPriceRow(primary, nowPrice) {
 
   const horizonMin = predictionMinutes(primary) || 10;
   const label = labelForPrediction(primary);
-  const predDisplay = primary.predicted_price ? `$${fmt(primary.predicted_price, 2)}` : '--';
+  const predDisplay = primary.predicted_price
+    ? formatDualPrice(primary.predicted_price, lastFxRate)
+    : '--';
   const match = statusText(primary);
   const isSingle = Array.isArray(lastPrediction?.predictions) && lastPrediction.predictions.length <= 1;
 
   const lastReady = primary.last_ready;
   let lastBlock = '';
   if (lastReady) {
-    const lastLineText = `Last predicted price: $${fmt(lastReady.predicted_price, 2)} (${fmt(lastReady.match_percent, 1)}%)`;
+    const lastLineText = `Last predicted price: ${formatDualPrice(lastReady.predicted_price, lastFxRate)} (${fmt(lastReady.match_percent, 1)}%)`;
     const actualLineText = lastReady.actual_price !== null && lastReady.actual_price !== undefined
-      ? `Actual price at match time: $${fmt(lastReady.actual_price, 2)}`
+      ? `Actual price at match time: ${formatDualPrice(lastReady.actual_price, lastFxRate)}`
       : 'Actual price at match time: --';
     const actualTime = lastReady.actual_at ? `at ${fmtDateTimeLower(lastReady.actual_at)}` : '';
     lastBlock = `${lastLineText}\n${actualLineText}${actualTime ? ' ' + actualTime : ''}`;
@@ -131,10 +162,12 @@ function renderPriceRow(primary, nowPrice) {
     `;
     if (lastReady) {
       const actualTime = lastReady.actual_at ? `at ${fmtDateTimeLower(lastReady.actual_at)}` : '';
-      if (lastLine) lastLine.textContent = `Last predicted price: $${fmt(lastReady.predicted_price, 2)} (${fmt(lastReady.match_percent, 1)}%)`;
+      if (lastLine) {
+        lastLine.textContent = `Last predicted price: ${formatDualPrice(lastReady.predicted_price, lastFxRate)} (${fmt(lastReady.match_percent, 1)}%)`;
+      }
       if (actualLine) {
         const actualText = lastReady.actual_price !== null && lastReady.actual_price !== undefined
-          ? `Actual price at match time: $${fmt(lastReady.actual_price, 2)}`
+          ? `Actual price at match time: ${formatDualPrice(lastReady.actual_price, lastFxRate)}`
           : 'Actual price at match time: --';
         actualLine.textContent = `${actualText}${actualTime ? ' ' + actualTime : ''}`;
       }
@@ -174,15 +207,17 @@ function renderPredList(predictions) {
   ordered.forEach((pred, idx) => {
     const label = labelForPrediction(pred);
     const horizonMin = predictionMinutes(pred) || 0;
-    const predPrice = pred.predicted_price ? `$${fmt(pred.predicted_price, 2)}` : '--';
+    const predPrice = pred.predicted_price
+      ? formatDualPrice(pred.predicted_price, lastFxRate)
+      : '--';
     const match = statusText(pred);
 
     let lastBlock = 'Last predicted: -- | Actual: --';
     if (pred.last_ready) {
       const lr = pred.last_ready;
-      const lastLine = `Last predicted: $${fmt(lr.predicted_price, 2)} (${fmt(lr.match_percent, 1)}%)`;
+      const lastLine = `Last predicted: ${formatDualPrice(lr.predicted_price, lastFxRate)} (${fmt(lr.match_percent, 1)}%)`;
       const actualLine = lr.actual_price !== null && lr.actual_price !== undefined
-        ? `Actual: $${fmt(lr.actual_price, 2)}`
+        ? `Actual: ${formatDualPrice(lr.actual_price, lastFxRate)}`
         : 'Actual: --';
       const actualTime = lr.actual_at ? `@ ${fmtDateTimeLower(lr.actual_at)}` : '';
       lastBlock = `${lastLine} | ${actualLine}${actualTime ? ' ' + actualTime : ''}`;
@@ -215,15 +250,26 @@ function renderPredictionUI() {
   const predictions = normalizePredictions(lastPrediction);
   updateTimeframePill(predictions);
   const primary = selectPrimaryPrediction(predictions.filter(p => p.predicted_price));
-  renderPriceRow(primary, lastNowPrice);
+  renderPriceRow(primary, lastNowPrice, lastNowPriceInr);
   renderPredList(predictions);
 }
 
 async function loadPrice() {
   try {
     const data = await getJSON('/api/btc/price');
-    document.getElementById('price-updated').textContent = `Updated: ${new Date(data.updated_at).toLocaleTimeString()}`;
+    const updated = new Date(data.updated_at).toLocaleTimeString();
+    let fxText = '';
+    if (data.fx_rate) {
+      fxText = ` | FX: 1 USD = ${fmt(data.fx_rate, 2)} INR`;
+      if (data.fx_source) fxText += ` (${data.fx_source})`;
+      if (data.fx_stale) fxText += ' stale';
+    }
+    document.getElementById('price-updated').textContent = `Updated: ${updated}${fxText}`;
     lastNowPrice = data.price;
+    lastNowPriceInr = data.price_inr;
+    if (data.fx_rate) lastFxRate = data.fx_rate;
+    if (data.fx_updated_at) lastFxUpdatedAt = data.fx_updated_at;
+    if (data.fx_source) lastFxSource = data.fx_source;
     renderPredictionUI();
     return data.price;
   } catch (err) {
