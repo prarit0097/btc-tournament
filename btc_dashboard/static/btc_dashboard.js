@@ -392,10 +392,11 @@ async function runNow() {
   try {
     const res = await getJSON('/api/btc/tournament/run', { method: 'POST', body: '{}' });
     state.textContent = res.status || 'started';
+    if (!res.running) {
+      button.disabled = false;
+    }
   } catch (err) {
     state.textContent = 'error';
-  } finally {
-    setTimeout(() => { button.disabled = false; }, 3000);
   }
 }
 
