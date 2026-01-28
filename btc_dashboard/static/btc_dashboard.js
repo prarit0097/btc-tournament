@@ -8,6 +8,14 @@ let lastFxSource = null;
 let lastForcedRefreshAt = 0;
 let runState = { running: false, last_started_at: null };
 
+const PRICE_POLL_MS = 30000;
+const PREDICTION_POLL_MS = 30000;
+const REFRESH_POLL_MS = 30000;
+const SUMMARY_POLL_MS = 120000;
+const SCOREBOARD_POLL_MS = 120000;
+const RUN_STATUS_POLL_MS = 15000;
+const COUNTDOWN_TICK_MS = 1000;
+
 const RUN_TIMER_START_KEY = 'btc_run_start';
 const RUN_TIMER_LAST_KEY = 'btc_run_last';
 
@@ -439,11 +447,7 @@ async function refreshPrediction() {
 async function loadPrediction() {
   try {
     const data = await getJSON('/api/btc/prediction/latest');
-    const nowPrice = await loadPrice();
     lastPrediction = data;
-    if (nowPrice !== null && nowPrice !== undefined) {
-      lastNowPrice = nowPrice;
-    }
     renderPredictionUI();
   } catch (err) {
     // ignore
@@ -517,14 +521,14 @@ async function init() {
   document.getElementById('filter-text').addEventListener('input', applyFilters);
   document.getElementById('sort-by').addEventListener('change', applyFilters);
 
-  setInterval(loadPrice, 15000);
-  setInterval(loadPrediction, 15000);
-  setInterval(refreshPrediction, 15000);
-  setInterval(loadSummary, 60000);
-  setInterval(loadScoreboard, 60000);
-  setInterval(pollRunStatus, 10000);
-  setInterval(updateCountdownOnly, 1000);
-  setInterval(renderRunTimer, 1000);
+  setInterval(loadPrice, PRICE_POLL_MS);
+  setInterval(loadPrediction, PREDICTION_POLL_MS);
+  setInterval(refreshPrediction, REFRESH_POLL_MS);
+  setInterval(loadSummary, SUMMARY_POLL_MS);
+  setInterval(loadScoreboard, SCOREBOARD_POLL_MS);
+  setInterval(pollRunStatus, RUN_STATUS_POLL_MS);
+  setInterval(updateCountdownOnly, COUNTDOWN_TICK_MS);
+  setInterval(renderRunTimer, COUNTDOWN_TICK_MS);
 }
 
 init();
