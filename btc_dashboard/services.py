@@ -415,9 +415,17 @@ def _decorate_last_ready(last_ready: Optional[Dict[str, Any]], horizon_min: int)
     try:
         pred_at = _parse_iso_utc(last_ready["predicted_at"])
         delta_min = int(last_ready.get("prediction_horizon_min") or horizon_min)
-        last_ready["actual_at"] = (pred_at + timedelta(minutes=delta_min)).isoformat()
+        tf_minutes = int(last_ready.get("timeframe_minutes") or delta_min or horizon_min)
+        tf_minutes = max(1, tf_minutes)
+        anchor = _align_to_interval(pred_at, tf_minutes)
+        target_ts = anchor + timedelta(minutes=delta_min)
+        last_ready["actual_at"] = target_ts.isoformat()
+        last_ready["target_iso"] = target_ts.isoformat()
+        last_ready["target_aligned"] = True
     except Exception:
         last_ready["actual_at"] = None
+        last_ready["target_iso"] = None
+        last_ready["target_aligned"] = False
     last_ready["actual_price"] = last_ready.get("actual_price_1h")
     _apply_match_fields(last_ready)
     return last_ready
