@@ -36,6 +36,8 @@ COINBASE_SPOT_URL = "https://api.coinbase.com/v2/prices/BTC-USD/spot"
 KRAKEN_TICKER_URL = "https://api.kraken.com/0/public/Ticker?pair=XXBTZUSD"
 LEGACY_PREDICTION_HORIZON_MINUTES = 60
 DEFAULT_TIMEFRAMES = ["1m", "3m", "5m", "10m", "15m", "30m", "1h", "2h", "4h"]
+MATCH_EPS = 1e-6
+MATCH_MAX_NONZERO = 99.9999
 
 _RUN_LOCK = threading.Lock()
 _RUN_STATE = {"running": False, "last_started_at": None}
@@ -308,9 +310,8 @@ def update_pending_predictions(config: TournamentConfig) -> None:
                 actual = get_live_price()["price"]
             except Exception:
                 continue
-        match = 100.0 - (abs(p["predicted_price"] - actual) / actual) * 100.0
-        match = max(0.0, min(100.0, match))
-        update_prediction(p["id"], actual, match, "ready")
+        metrics = _compute_match_metrics(p.get("predicted_price"), actual)
+        update_prediction(p["id"], actual, metrics["match_percent"], "ready")
 
 
 def _predict_return_from_champion(config: TournamentConfig, latest_row: pd.DataFrame) -> Optional[Dict[str, Any]]:
@@ -369,6 +370,45 @@ def _cooldown_minutes(horizon_min: int) -> int:
     return max(1, min(15, int(horizon_min / 2)))
 
 
+def _compute_match_metrics(predicted: Optional[float], actual: Optional[float]) -> Dict[str, Optional[float]]:
+    if predicted is None or actual is None:
+        return {"abs_diff": None, "pct_error": None, "match_percent": None}
+    try:
+        predicted_val = float(predicted)
+        actual_val = float(actual)
+    except (TypeError, ValueError):
+        return {"abs_diff": None, "pct_error": None, "match_percent": None}
+    abs_diff = abs(predicted_val - actual_val)
+    if actual_val == 0:
+        return {"abs_diff": abs_diff, "pct_error": None, "match_percent": None}
+    pct_error = (abs_diff / abs(actual_val)) * 100.0
+    match = 100.0 - pct_error
+    match = max(0.0, min(100.0, match))
+    if abs_diff > MATCH_EPS:
+        match = min(match, MATCH_MAX_NONZERO)
+    return {"abs_diff": abs_diff, "pct_error": pct_error, "match_percent": match}
+
+
+def _apply_match_fields(row: Dict[str, Any]) -> Dict[str, Any]:
+    predicted = row.get("predicted_price")
+    actual = row.get("actual_price_1h") if row.get("actual_price_1h") is not None else row.get("actual_price")
+    metrics = _compute_match_metrics(predicted, actual)
+    if metrics["abs_diff"] is not None:
+        row["abs_diff_usd"] = round(float(metrics["abs_diff"]), 2)
+    else:
+        row["abs_diff_usd"] = None
+    if metrics["pct_error"] is not None:
+        row["pct_error"] = round(float(metrics["pct_error"]), 6)
+    else:
+        row["pct_error"] = None
+    if metrics["match_percent"] is not None:
+        row["match_percent_precise"] = round(float(metrics["match_percent"]), 4)
+        row["match_percent"] = float(metrics["match_percent"])
+    else:
+        row["match_percent_precise"] = None
+    return row
+
+
 def _decorate_last_ready(last_ready: Optional[Dict[str, Any]], horizon_min: int) -> Optional[Dict[str, Any]]:
     if not last_ready:
         return None
@@ -379,6 +419,7 @@ def _decorate_last_ready(last_ready: Optional[Dict[str, Any]], horizon_min: int)
     except Exception:
         last_ready["actual_at"] = None
     last_ready["actual_price"] = last_ready.get("actual_price_1h")
+    _apply_match_fields(last_ready)
     return last_ready
 
 
@@ -406,6 +447,7 @@ def refresh_prediction(config: TournamentConfig) -> Dict[str, Any]:
             pred_at = _parse_iso_utc(latest["predicted_at"])
             cooldown = _cooldown_minutes(horizon_min)
             if datetime.now(timezone.utc) - pred_at < timedelta(minutes=cooldown):
+                _apply_match_fields(latest)
                 latest["last_ready"] = _decorate_last_ready(
                     get_latest_ready_prediction_for_timeframe(timeframe),
                     horizon_min,
@@ -475,6 +517,7 @@ def refresh_prediction(config: TournamentConfig) -> Dict[str, Any]:
         }
         pred_id = insert_prediction(record)
         record["id"] = pred_id
+        _apply_match_fields(record)
         predictions.append(record)
 
     return {"predictions": predictions}
@@ -488,6 +531,7 @@ def latest_prediction(config: TournamentConfig, update_pending: bool = True) -> 
         latest = get_latest_prediction_for_timeframe(timeframe)
         horizon_min = _timeframe_to_minutes(timeframe, config.candle_minutes)
         if latest:
+            _apply_match_fields(latest)
             latest["last_ready"] = _decorate_last_ready(
                 get_latest_ready_prediction_for_timeframe(timeframe),
                 horizon_min,

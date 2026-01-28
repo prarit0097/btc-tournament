@@ -270,7 +270,7 @@ def insert_prediction(row: Dict[str, Any]) -> int:
         return int(cur.lastrowid)
 
 
-def update_prediction(pred_id: int, actual_price: float, match_percent: float, status: str) -> None:
+def update_prediction(pred_id: int, actual_price: float, match_percent: Optional[float], status: str) -> None:
     ensure_tables()
     with connect() as con:
         con.execute(

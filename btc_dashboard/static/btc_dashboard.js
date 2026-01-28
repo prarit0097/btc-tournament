@@ -30,6 +30,14 @@ function fmt(num, digits = 2) {
   return Number(num).toLocaleString('en-US', { maximumFractionDigits: digits });
 }
 
+function fmtFixed(num, digits = 2) {
+  if (num === null || num === undefined || Number.isNaN(num)) return '--';
+  return Number(num).toLocaleString('en-US', {
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+  });
+}
+
 function fmtUsd(num) {
   if (num === null || num === undefined || Number.isNaN(num)) return '--';
   return `$${fmt(num, 2)}`;
@@ -182,8 +190,11 @@ function formatCountdown(predictedAt, horizonMin) {
 
 function statusText(pred) {
   if (!pred) return '--';
+  if (pred.match_percent_precise !== null && pred.match_percent_precise !== undefined) {
+    return formatMatch(pred);
+  }
   if (pred.match_percent !== null && pred.match_percent !== undefined) {
-    return `${fmt(pred.match_percent, 1)}%`;
+    return formatMatch(pred);
   }
   if (pred.status === 'pending') {
     const horizonMin = predictionMinutes(pred);
@@ -193,6 +204,19 @@ function statusText(pred) {
     return pred.status.replace('_', ' ');
   }
   return '--';
+}
+
+function formatMatch(pred) {
+  if (!pred) return '--';
+  const hasPrecise = pred.match_percent_precise !== null && pred.match_percent_precise !== undefined;
+  const matchVal = hasPrecise ? pred.match_percent_precise : pred.match_percent;
+  if (matchVal === null || matchVal === undefined || Number.isNaN(matchVal)) return '--';
+  const digits = hasPrecise ? 4 : 1;
+  let text = `${fmtFixed(matchVal, digits)}%`;
+  if (pred.abs_diff_usd !== null && pred.abs_diff_usd !== undefined && !Number.isNaN(pred.abs_diff_usd)) {
+    text += ` (Δ$${fmtFixed(pred.abs_diff_usd, 2)})`;
+  }
+  return text;
 }
 
 function renderPriceRow(primary, nowPriceUsd, nowPriceInr) {
@@ -220,7 +244,7 @@ function renderPriceRow(primary, nowPriceUsd, nowPriceInr) {
   const lastReady = primary.last_ready;
   let lastBlock = '';
   if (lastReady) {
-    const lastLineText = `Last predicted price: ${formatDualPrice(lastReady.predicted_price, lastFxRate)} (${fmt(lastReady.match_percent, 1)}%)`;
+    const lastLineText = `Last predicted price: ${formatDualPrice(lastReady.predicted_price, lastFxRate)} (${formatMatch(lastReady)})`;
     const actualLineText = lastReady.actual_price !== null && lastReady.actual_price !== undefined
       ? `Actual price at match time: ${formatDualPrice(lastReady.actual_price, lastFxRate)}`
       : 'Actual price at match time: --';
@@ -237,7 +261,7 @@ function renderPriceRow(primary, nowPriceUsd, nowPriceInr) {
     if (lastReady) {
       const actualTime = lastReady.actual_at ? `at ${fmtDateTimeLower(lastReady.actual_at)}` : '';
       if (lastLine) {
-        lastLine.textContent = `Last predicted price: ${formatDualPrice(lastReady.predicted_price, lastFxRate)} (${fmt(lastReady.match_percent, 1)}%)`;
+        lastLine.textContent = `Last predicted price: ${formatDualPrice(lastReady.predicted_price, lastFxRate)} (${formatMatch(lastReady)})`;
       }
       if (actualLine) {
         const actualText = lastReady.actual_price !== null && lastReady.actual_price !== undefined
@@ -289,7 +313,7 @@ function renderPredList(predictions) {
     let lastBlock = 'Last predicted: -- | Actual: --';
     if (pred.last_ready) {
       const lr = pred.last_ready;
-      const lastLine = `Last predicted: ${formatDualPrice(lr.predicted_price, lastFxRate)} (${fmt(lr.match_percent, 1)}%)`;
+      const lastLine = `Last predicted: ${formatDualPrice(lr.predicted_price, lastFxRate)} (${formatMatch(lr)})`;
       const actualLine = lr.actual_price !== null && lr.actual_price !== undefined
         ? `Actual: ${formatDualPrice(lr.actual_price, lastFxRate)}`
         : 'Actual: --';
