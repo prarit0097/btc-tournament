@@ -26,10 +26,18 @@ def ensure_tables() -> None:
                 run_at TEXT,
                 run_started_at TEXT,
                 run_finished_at TEXT,
+                timeframe TEXT,
+                candle_minutes INTEGER,
                 run_mode TEXT,
                 candidate_count INTEGER,
                 duration_seconds REAL,
-                max_workers INTEGER
+                max_workers INTEGER,
+                train_days INTEGER,
+                val_hours INTEGER,
+                max_candidates_total INTEGER,
+                max_candidates_per_target INTEGER,
+                enable_dl INTEGER,
+                ensemble_top_k INTEGER
             )
             """
         )
@@ -38,10 +46,26 @@ def ensure_tables() -> None:
             con.execute("ALTER TABLE tournament_runs ADD COLUMN run_started_at TEXT")
         if "run_finished_at" not in cols_runs:
             con.execute("ALTER TABLE tournament_runs ADD COLUMN run_finished_at TEXT")
+        if "timeframe" not in cols_runs:
+            con.execute("ALTER TABLE tournament_runs ADD COLUMN timeframe TEXT")
+        if "candle_minutes" not in cols_runs:
+            con.execute("ALTER TABLE tournament_runs ADD COLUMN candle_minutes INTEGER")
         if "duration_seconds" not in cols_runs:
             con.execute("ALTER TABLE tournament_runs ADD COLUMN duration_seconds REAL")
         if "max_workers" not in cols_runs:
             con.execute("ALTER TABLE tournament_runs ADD COLUMN max_workers INTEGER")
+        if "train_days" not in cols_runs:
+            con.execute("ALTER TABLE tournament_runs ADD COLUMN train_days INTEGER")
+        if "val_hours" not in cols_runs:
+            con.execute("ALTER TABLE tournament_runs ADD COLUMN val_hours INTEGER")
+        if "max_candidates_total" not in cols_runs:
+            con.execute("ALTER TABLE tournament_runs ADD COLUMN max_candidates_total INTEGER")
+        if "max_candidates_per_target" not in cols_runs:
+            con.execute("ALTER TABLE tournament_runs ADD COLUMN max_candidates_per_target INTEGER")
+        if "enable_dl" not in cols_runs:
+            con.execute("ALTER TABLE tournament_runs ADD COLUMN enable_dl INTEGER")
+        if "ensemble_top_k" not in cols_runs:
+            con.execute("ALTER TABLE tournament_runs ADD COLUMN ensemble_top_k INTEGER")
         con.execute(
             """
             CREATE TABLE IF NOT EXISTS tournament_scores (
@@ -103,23 +127,41 @@ def insert_run(
     run_finished_at: Optional[str] = None,
     duration_seconds: Optional[float] = None,
     max_workers: Optional[int] = None,
+    timeframe: Optional[str] = None,
+    candle_minutes: Optional[int] = None,
+    train_days: Optional[int] = None,
+    val_hours: Optional[int] = None,
+    max_candidates_total: Optional[int] = None,
+    max_candidates_per_target: Optional[int] = None,
+    enable_dl: Optional[bool] = None,
+    ensemble_top_k: Optional[int] = None,
 ) -> int:
     ensure_tables()
     with connect() as con:
         cur = con.execute(
             """
             INSERT INTO tournament_runs (
-                run_at, run_started_at, run_finished_at, run_mode, candidate_count, duration_seconds, max_workers
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                run_at, run_started_at, run_finished_at, timeframe, candle_minutes, run_mode, candidate_count,
+                duration_seconds, max_workers, train_days, val_hours, max_candidates_total, max_candidates_per_target,
+                enable_dl, ensemble_top_k
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 run_at,
                 run_started_at,
                 run_finished_at,
+                timeframe,
+                candle_minutes,
                 run_mode,
                 candidate_count,
                 duration_seconds,
                 max_workers,
+                train_days,
+                val_hours,
+                max_candidates_total,
+                max_candidates_per_target,
+                1 if enable_dl else 0 if enable_dl is not None else None,
+                ensemble_top_k,
             ),
         )
         return int(cur.lastrowid)
@@ -165,7 +207,9 @@ def get_latest_run() -> Optional[Dict[str, Any]]:
     with connect() as con:
         cur = con.execute(
             """
-            SELECT id, run_at, run_started_at, run_finished_at, run_mode, candidate_count, duration_seconds, max_workers
+            SELECT id, run_at, run_started_at, run_finished_at, timeframe, candle_minutes, run_mode, candidate_count,
+                   duration_seconds, max_workers, train_days, val_hours, max_candidates_total,
+                   max_candidates_per_target, enable_dl, ensemble_top_k
             FROM tournament_runs
             ORDER BY id DESC LIMIT 1
             """
@@ -178,25 +222,73 @@ def get_latest_run() -> Optional[Dict[str, Any]]:
         "run_at": row[1],
         "run_started_at": row[2],
         "run_finished_at": row[3],
-        "run_mode": row[4],
-        "candidate_count": row[5],
-        "duration_seconds": row[6],
-        "max_workers": row[7],
+        "timeframe": row[4],
+        "candle_minutes": row[5],
+        "run_mode": row[6],
+        "candidate_count": row[7],
+        "duration_seconds": row[8],
+        "max_workers": row[9],
+        "train_days": row[10],
+        "val_hours": row[11],
+        "max_candidates_total": row[12],
+        "max_candidates_per_target": row[13],
+        "enable_dl": row[14],
+        "ensemble_top_k": row[15],
     }
 
 
-def get_recent_runs(limit: int = 20, run_mode: Optional[str] = None) -> List[Dict[str, Any]]:
+def get_recent_runs(
+    limit: int = 20,
+    run_mode: Optional[str] = None,
+    timeframe: Optional[str] = None,
+    candle_minutes: Optional[int] = None,
+    train_days: Optional[int] = None,
+    val_hours: Optional[int] = None,
+    max_workers: Optional[int] = None,
+    max_candidates_total: Optional[int] = None,
+    max_candidates_per_target: Optional[int] = None,
+    enable_dl: Optional[bool] = None,
+) -> List[Dict[str, Any]]:
     ensure_tables()
     query = """
-        SELECT run_at, run_started_at, run_finished_at, run_mode, candidate_count, duration_seconds, max_workers
+        SELECT run_at, run_started_at, run_finished_at, timeframe, candle_minutes, run_mode, candidate_count,
+               duration_seconds, max_workers, train_days, val_hours, max_candidates_total, max_candidates_per_target,
+               enable_dl, ensemble_top_k
         FROM tournament_runs
     """
-    params: Tuple[Any, ...]
+    clauses: List[str] = []
+    params_list: List[Any] = []
     if run_mode:
-        query += " WHERE run_mode = ?"
-        params = (run_mode, limit)
-    else:
-        params = (limit,)
+        clauses.append("run_mode = ?")
+        params_list.append(run_mode)
+    if timeframe:
+        clauses.append("timeframe = ?")
+        params_list.append(timeframe)
+    if candle_minutes is not None:
+        clauses.append("candle_minutes = ?")
+        params_list.append(candle_minutes)
+    if train_days is not None:
+        clauses.append("train_days = ?")
+        params_list.append(train_days)
+    if val_hours is not None:
+        clauses.append("val_hours = ?")
+        params_list.append(val_hours)
+    if max_workers is not None:
+        clauses.append("max_workers = ?")
+        params_list.append(max_workers)
+    if max_candidates_total is not None:
+        clauses.append("max_candidates_total = ?")
+        params_list.append(max_candidates_total)
+    if max_candidates_per_target is not None:
+        clauses.append("max_candidates_per_target = ?")
+        params_list.append(max_candidates_per_target)
+    if enable_dl is not None:
+        clauses.append("enable_dl = ?")
+        params_list.append(1 if enable_dl else 0)
+    params: Tuple[Any, ...]
+    if clauses:
+        query += " WHERE " + " AND ".join(clauses)
+    params = tuple(params_list + [limit])
     query += " ORDER BY id DESC LIMIT ?"
     with connect() as con:
         cur = con.execute(query, params)
@@ -208,10 +300,18 @@ def get_recent_runs(limit: int = 20, run_mode: Optional[str] = None) -> List[Dic
                 "run_at": r[0],
                 "run_started_at": r[1],
                 "run_finished_at": r[2],
-                "run_mode": r[3],
-                "candidate_count": r[4],
-                "duration_seconds": r[5],
-                "max_workers": r[6],
+                "timeframe": r[3],
+                "candle_minutes": r[4],
+                "run_mode": r[5],
+                "candidate_count": r[6],
+                "duration_seconds": r[7],
+                "max_workers": r[8],
+                "train_days": r[9],
+                "val_hours": r[10],
+                "max_candidates_total": r[11],
+                "max_candidates_per_target": r[12],
+                "enable_dl": r[13],
+                "ensemble_top_k": r[14],
             }
         )
     return results

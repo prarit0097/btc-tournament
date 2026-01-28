@@ -272,7 +272,7 @@ def get_tournament_summary(config: TournamentConfig) -> Dict[str, Any]:
     reg = _load_registry(tf_cfg.registry_path)
     latest_run = get_latest_run()
     candidate_count = latest_run["candidate_count"] if latest_run else 0
-    eta_seconds = _estimate_eta_seconds(config, candidate_count)
+    eta_seconds = _estimate_eta_seconds(tf_cfg, candidate_count)
     return {
         "last_run_at": latest_run["run_at"] if latest_run else None,
         "run_mode": latest_run["run_mode"] if latest_run else None,
@@ -478,11 +478,14 @@ def _get_recent_bias(config: TournamentConfig, timeframe: str) -> float:
     return bias
 
 
-def _estimate_eta_seconds(config: TournamentConfig, candidate_count: int, limit: int = 20) -> Optional[int]:
-    runs = get_recent_runs(limit=limit, run_mode=config.run_mode)
+def _estimate_eta_from_runs(
+    runs: List[Dict[str, Any]], candidate_count: int, config: TournamentConfig
+) -> Optional[int]:
     durations: List[float] = []
     counts: List[int] = []
     workers: List[int] = []
+    train_days_list: List[int] = []
+    val_hours_list: List[int] = []
     for run in runs:
         dur = run.get("duration_seconds")
         if dur is None:
@@ -500,6 +503,12 @@ def _estimate_eta_seconds(config: TournamentConfig, candidate_count: int, limit:
         wk = run.get("max_workers")
         if isinstance(wk, int) and wk > 0:
             workers.append(wk)
+        td = run.get("train_days")
+        if isinstance(td, int) and td > 0:
+            train_days_list.append(td)
+        vh = run.get("val_hours")
+        if isinstance(vh, int) and vh > 0:
+            val_hours_list.append(vh)
     if not durations:
         return None
     durations.sort()
@@ -514,8 +523,47 @@ def _estimate_eta_seconds(config: TournamentConfig, candidate_count: int, limit:
         avg_workers = float(sum(workers) / len(workers))
         if avg_workers > 0:
             scale *= avg_workers / float(config.max_workers)
+    if train_days_list and getattr(config, "train_days", None):
+        avg_train_days = float(sum(train_days_list) / len(train_days_list))
+        if avg_train_days > 0:
+            scale *= float(config.train_days) / avg_train_days
+    if val_hours_list and getattr(config, "val_hours", None):
+        avg_val_hours = float(sum(val_hours_list) / len(val_hours_list))
+        if avg_val_hours > 0:
+            scale *= float(config.val_hours) / avg_val_hours
     eta = max(30.0, median_duration * scale)
     return int(round(eta))
+
+
+def _estimate_eta_seconds(config: TournamentConfig, candidate_count: int, limit: int = 20) -> Optional[int]:
+    base_filters: Dict[str, Any] = {
+        "run_mode": config.run_mode,
+        "timeframe": config.timeframe,
+        "candle_minutes": config.candle_minutes,
+        "train_days": config.train_days,
+        "val_hours": config.val_hours,
+        "max_workers": config.max_workers,
+        "max_candidates_total": config.max_candidates_total,
+        "max_candidates_per_target": config.max_candidates_per_target,
+        "enable_dl": config.enable_dl,
+    }
+    relax_steps = [
+        {},
+        {"max_candidates_total": None, "max_candidates_per_target": None},
+        {"train_days": None, "val_hours": None},
+        {"enable_dl": None},
+        {"timeframe": None, "candle_minutes": None},
+        {"max_workers": None},
+        {"run_mode": None},
+    ]
+    for relax in relax_steps:
+        filters = dict(base_filters)
+        filters.update(relax)
+        runs = get_recent_runs(limit=limit, **filters)
+        eta = _estimate_eta_from_runs(runs, candidate_count, config)
+        if eta is not None:
+            return eta
+    return None
 
 
 def _apply_match_fields(row: Dict[str, Any]) -> Dict[str, Any]:

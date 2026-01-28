@@ -515,6 +515,14 @@ def run_tournament(config: TournamentConfig) -> Dict[str, Any]:
             run_finished_at=run_finished_at.isoformat(),
             duration_seconds=duration_seconds,
             max_workers=config.max_workers,
+            timeframe=config.timeframe,
+            candle_minutes=config.candle_minutes,
+            train_days=config.train_days,
+            val_hours=config.val_hours,
+            max_candidates_total=config.max_candidates_total,
+            max_candidates_per_target=config.max_candidates_per_target,
+            enable_dl=config.enable_dl,
+            ensemble_top_k=config.ensemble_top_k,
         )
         insert_scores(run_id, scoreboard_rows)
     except Exception as exc:
