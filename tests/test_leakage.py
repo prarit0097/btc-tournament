@@ -7,7 +7,7 @@ from btc_tournament.features import compute_features, make_supervised
 
 class TestLeakage(unittest.TestCase):
     def test_target_shift(self):
-        idx = pd.date_range("2024-01-01", periods=30, freq="H", tz="UTC")
+        idx = pd.date_range("2024-01-01", periods=30, freq="h", tz="UTC")
         data = pd.DataFrame(
             {
                 "open": np.arange(30) + 1,
@@ -24,7 +24,7 @@ class TestLeakage(unittest.TestCase):
         self.assertTrue(np.allclose(sup["y_ret"].values, aligned.values, equal_nan=False))
 
     def test_strict_no_future(self):
-        idx = pd.date_range("2024-01-01", periods=200, freq="H", tz="UTC")
+        idx = pd.date_range("2024-01-01", periods=200, freq="h", tz="UTC")
         rng = np.random.default_rng(42)
         data = pd.DataFrame(
             {

@@ -8,7 +8,7 @@ from btc_tournament.splits import walk_forward_split
 
 class TestSplits(unittest.TestCase):
     def test_walk_forward(self):
-        idx = pd.date_range("2024-01-01", periods=24 * 200, freq="H", tz="UTC")
+        idx = pd.date_range("2024-01-01", periods=24 * 200, freq="h", tz="UTC")
         df = pd.DataFrame({"x": range(len(idx))}, index=idx)
         split = walk_forward_split(df, train_days=90, val_hours=72, test_hours=24, use_test=True)
         self.assertTrue(len(split.train) > 0)
