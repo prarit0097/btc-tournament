@@ -24,11 +24,24 @@ def ensure_tables() -> None:
             CREATE TABLE IF NOT EXISTS tournament_runs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 run_at TEXT,
+                run_started_at TEXT,
+                run_finished_at TEXT,
                 run_mode TEXT,
-                candidate_count INTEGER
+                candidate_count INTEGER,
+                duration_seconds REAL,
+                max_workers INTEGER
             )
             """
         )
+        cols_runs = {row[1] for row in con.execute("PRAGMA table_info(tournament_runs)").fetchall()}
+        if "run_started_at" not in cols_runs:
+            con.execute("ALTER TABLE tournament_runs ADD COLUMN run_started_at TEXT")
+        if "run_finished_at" not in cols_runs:
+            con.execute("ALTER TABLE tournament_runs ADD COLUMN run_finished_at TEXT")
+        if "duration_seconds" not in cols_runs:
+            con.execute("ALTER TABLE tournament_runs ADD COLUMN duration_seconds REAL")
+        if "max_workers" not in cols_runs:
+            con.execute("ALTER TABLE tournament_runs ADD COLUMN max_workers INTEGER")
         con.execute(
             """
             CREATE TABLE IF NOT EXISTS tournament_scores (
@@ -82,12 +95,32 @@ def ensure_tables() -> None:
             con.execute("ALTER TABLE btc_predictions ADD COLUMN timeframe_minutes INTEGER")
 
 
-def insert_run(run_at: str, run_mode: str, candidate_count: int) -> int:
+def insert_run(
+    run_at: str,
+    run_mode: str,
+    candidate_count: int,
+    run_started_at: Optional[str] = None,
+    run_finished_at: Optional[str] = None,
+    duration_seconds: Optional[float] = None,
+    max_workers: Optional[int] = None,
+) -> int:
     ensure_tables()
     with connect() as con:
         cur = con.execute(
-            "INSERT INTO tournament_runs (run_at, run_mode, candidate_count) VALUES (?, ?, ?)",
-            (run_at, run_mode, candidate_count),
+            """
+            INSERT INTO tournament_runs (
+                run_at, run_started_at, run_finished_at, run_mode, candidate_count, duration_seconds, max_workers
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                run_at,
+                run_started_at,
+                run_finished_at,
+                run_mode,
+                candidate_count,
+                duration_seconds,
+                max_workers,
+            ),
         )
         return int(cur.lastrowid)
 
@@ -130,11 +163,58 @@ def insert_scores(run_id: int, rows: List[Dict[str, Any]]) -> None:
 def get_latest_run() -> Optional[Dict[str, Any]]:
     ensure_tables()
     with connect() as con:
-        cur = con.execute("SELECT id, run_at, run_mode, candidate_count FROM tournament_runs ORDER BY id DESC LIMIT 1")
+        cur = con.execute(
+            """
+            SELECT id, run_at, run_started_at, run_finished_at, run_mode, candidate_count, duration_seconds, max_workers
+            FROM tournament_runs
+            ORDER BY id DESC LIMIT 1
+            """
+        )
         row = cur.fetchone()
     if not row:
         return None
-    return {"id": row[0], "run_at": row[1], "run_mode": row[2], "candidate_count": row[3]}
+    return {
+        "id": row[0],
+        "run_at": row[1],
+        "run_started_at": row[2],
+        "run_finished_at": row[3],
+        "run_mode": row[4],
+        "candidate_count": row[5],
+        "duration_seconds": row[6],
+        "max_workers": row[7],
+    }
+
+
+def get_recent_runs(limit: int = 20, run_mode: Optional[str] = None) -> List[Dict[str, Any]]:
+    ensure_tables()
+    query = """
+        SELECT run_at, run_started_at, run_finished_at, run_mode, candidate_count, duration_seconds, max_workers
+        FROM tournament_runs
+    """
+    params: Tuple[Any, ...]
+    if run_mode:
+        query += " WHERE run_mode = ?"
+        params = (run_mode, limit)
+    else:
+        params = (limit,)
+    query += " ORDER BY id DESC LIMIT ?"
+    with connect() as con:
+        cur = con.execute(query, params)
+        rows = cur.fetchall()
+    results: List[Dict[str, Any]] = []
+    for r in rows:
+        results.append(
+            {
+                "run_at": r[0],
+                "run_started_at": r[1],
+                "run_finished_at": r[2],
+                "run_mode": r[3],
+                "candidate_count": r[4],
+                "duration_seconds": r[5],
+                "max_workers": r[6],
+            }
+        )
+    return results
 
 
 def get_scores(run_id: int, limit: int = 500) -> List[Dict[str, Any]]:

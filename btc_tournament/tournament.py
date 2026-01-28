@@ -293,6 +293,7 @@ def _cap_candidates(
 def run_tournament(config: TournamentConfig) -> Dict[str, Any]:
     _setup_logging(config.log_path)
     LOGGER.info("Starting tournament")
+    run_started_at = datetime.now(timezone.utc)
 
     df, coverage = _prep_data(config)
     if df.empty:
@@ -304,7 +305,8 @@ def run_tournament(config: TournamentConfig) -> Dict[str, Any]:
     registry = load_registry(config.registry_path)
 
     results: Dict[str, Any] = {"coverage": coverage}
-    run_at = datetime.now(timezone.utc).isoformat()
+    run_finished_at = datetime.now(timezone.utc)
+    run_at = run_finished_at.isoformat()
 
     run_mode = _resolve_run_mode(config)
 
@@ -504,7 +506,16 @@ def run_tournament(config: TournamentConfig) -> Dict[str, Any]:
 
     save_registry(config.registry_path, registry)
     try:
-        run_id = insert_run(run_at, run_mode, candidate_count_total)
+        duration_seconds = (run_finished_at - run_started_at).total_seconds()
+        run_id = insert_run(
+            run_at,
+            run_mode,
+            candidate_count_total,
+            run_started_at=run_started_at.isoformat(),
+            run_finished_at=run_finished_at.isoformat(),
+            duration_seconds=duration_seconds,
+            max_workers=config.max_workers,
+        )
         insert_scores(run_id, scoreboard_rows)
     except Exception as exc:
         LOGGER.warning("Failed to store scoreboard: %s", exc)

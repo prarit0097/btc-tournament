@@ -22,6 +22,7 @@ from .db import (
     get_latest_run,
     get_ohlcv_close_at,
     get_recent_ready_predictions,
+    get_recent_runs,
     get_scores,
     insert_prediction,
     list_pending_predictions,
@@ -271,11 +272,13 @@ def get_tournament_summary(config: TournamentConfig) -> Dict[str, Any]:
     reg = _load_registry(tf_cfg.registry_path)
     latest_run = get_latest_run()
     candidate_count = latest_run["candidate_count"] if latest_run else 0
+    eta_seconds = _estimate_eta_seconds(config, candidate_count)
     return {
         "last_run_at": latest_run["run_at"] if latest_run else None,
         "run_mode": latest_run["run_mode"] if latest_run else None,
         "candidate_count": candidate_count,
         "champions": reg.get("champions", {}),
+        "eta_seconds": eta_seconds,
     }
 
 
@@ -473,6 +476,46 @@ def _get_recent_bias(config: TournamentConfig, timeframe: str) -> float:
     if max_abs > 0:
         bias = max(-max_abs, min(max_abs, bias))
     return bias
+
+
+def _estimate_eta_seconds(config: TournamentConfig, candidate_count: int, limit: int = 20) -> Optional[int]:
+    runs = get_recent_runs(limit=limit, run_mode=config.run_mode)
+    durations: List[float] = []
+    counts: List[int] = []
+    workers: List[int] = []
+    for run in runs:
+        dur = run.get("duration_seconds")
+        if dur is None:
+            continue
+        try:
+            dur_val = float(dur)
+        except (TypeError, ValueError):
+            continue
+        if dur_val <= 0:
+            continue
+        durations.append(dur_val)
+        cnt = run.get("candidate_count")
+        if isinstance(cnt, int) and cnt > 0:
+            counts.append(cnt)
+        wk = run.get("max_workers")
+        if isinstance(wk, int) and wk > 0:
+            workers.append(wk)
+    if not durations:
+        return None
+    durations.sort()
+    mid = len(durations) // 2
+    median_duration = durations[mid] if len(durations) % 2 == 1 else (durations[mid - 1] + durations[mid]) / 2.0
+    scale = 1.0
+    if counts and candidate_count:
+        avg_candidates = float(sum(counts) / len(counts))
+        if avg_candidates > 0:
+            scale *= float(candidate_count) / avg_candidates
+    if workers and config.max_workers:
+        avg_workers = float(sum(workers) / len(workers))
+        if avg_workers > 0:
+            scale *= avg_workers / float(config.max_workers)
+    eta = max(30.0, median_duration * scale)
+    return int(round(eta))
 
 
 def _apply_match_fields(row: Dict[str, Any]) -> Dict[str, Any]:

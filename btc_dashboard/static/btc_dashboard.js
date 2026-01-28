@@ -130,6 +130,11 @@ function expectedTimeLabel(candidateCount) {
   return 'Expected: ~3-8 min';
 }
 
+function formatEtaSeconds(seconds) {
+  if (!seconds || seconds <= 0) return 'Expected: --';
+  return `Expected: ~${formatElapsed(seconds * 1000)}`;
+}
+
 function updateRunState(state) {
   if (!state) return;
   runState.running = !!state.running;
@@ -393,7 +398,13 @@ async function loadSummary() {
     document.getElementById('last-completed').textContent = `Last tournament completed: ${fmtDateTimeLower(data.last_run_at)}`;
     document.getElementById('run-mode').textContent = `mode: ${data.run_mode || '--'}`;
     const eta = document.getElementById('run-eta');
-    if (eta) eta.textContent = expectedTimeLabel(candidateCount);
+    if (eta) {
+      if (data.eta_seconds) {
+        eta.textContent = formatEtaSeconds(data.eta_seconds);
+      } else {
+        eta.textContent = expectedTimeLabel(candidateCount);
+      }
+    }
 
     const champs = data.champions || {};
     document.getElementById('champ-direction').textContent = `Direction champion: ${champs.direction?.model_id || '--'}`;
