@@ -176,6 +176,32 @@ def _parse_iso_utc(value: str) -> datetime:
     return ts
 
 
+def _parse_user_timestamp(value: str) -> datetime:
+    raw = (value or "").strip()
+    if not raw:
+        raise ValueError("empty timestamp")
+    if raw.isdigit():
+        epoch = int(raw)
+        if epoch > 10_000_000_000:
+            epoch = int(epoch / 1000)
+        return datetime.fromtimestamp(epoch, tz=timezone.utc)
+    try:
+        ts = datetime.fromisoformat(raw)
+    except ValueError:
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
+            try:
+                ts = datetime.strptime(raw, fmt)
+                break
+            except ValueError:
+                ts = None
+        if ts is None:
+            raise
+    if ts.tzinfo is None:
+        local_tz = datetime.now().astimezone().tzinfo
+        ts = ts.replace(tzinfo=local_tz)
+    return ts.astimezone(timezone.utc)
+
+
 def _align_to_interval(ts: datetime, minutes: int) -> datetime:
     if minutes <= 0:
         return ts
@@ -264,6 +290,38 @@ def _config_for_timeframe(base: TournamentConfig, timeframe: str) -> TournamentC
     cfg.registry_path = base.data_dir / f"registry_{cfg.candle_minutes}m.json"
     cfg.log_path = base.data_dir / f"tournament_{cfg.candle_minutes}m.log"
     return cfg
+
+
+def get_price_at_timestamp(config: TournamentConfig, value: str) -> Dict[str, Any]:
+    ts_utc = _parse_user_timestamp(value)
+    primary_tf = get_primary_timeframe(config)
+    tf_cfg = _config_for_timeframe(config, primary_tf)
+    tf_minutes = max(1, int(tf_cfg.candle_minutes))
+    anchor = _align_to_interval(ts_utc, tf_minutes)
+    target_iso = anchor.isoformat()
+    price = get_ohlcv_close_at(target_iso, table=tf_cfg.ohlcv_table)
+    if price is None:
+        raise LookupError("price not found for timestamp")
+    result: Dict[str, Any] = {
+        "requested_at": value,
+        "timestamp_utc": ts_utc.isoformat(),
+        "aligned_at": target_iso,
+        "price": float(price),
+        "timeframe": tf_cfg.timeframe,
+        "table": tf_cfg.ohlcv_table,
+        "aligned": True,
+    }
+    try:
+        fx = _get_fx_rate()
+        if fx.get("rate"):
+            result["price_inr"] = float(price) * float(fx["rate"])
+            result["fx_rate"] = fx["rate"]
+            result["fx_updated_at"] = fx["updated_at"]
+            result["fx_source"] = fx["source"]
+            result["fx_stale"] = fx["stale"]
+    except Exception:
+        pass
+    return result
 
 
 def get_tournament_summary(config: TournamentConfig) -> Dict[str, Any]:

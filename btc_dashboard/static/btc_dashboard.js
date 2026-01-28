@@ -366,6 +366,29 @@ function renderPredictionUI() {
   renderPredList(predictions);
 }
 
+async function queryPriceAt() {
+  const input = document.getElementById('price-at-input');
+  const result = document.getElementById('price-at-result');
+  if (!input || !result) return;
+  const value = input.value.trim();
+  if (!value) {
+    result.textContent = 'Price at timestamp: --';
+    return;
+  }
+  result.textContent = 'Price at timestamp: loading...';
+  try {
+    const data = await getJSON(`/api/btc/price_at?ts=${encodeURIComponent(value)}`);
+    const display = formatNowPrice(data.price, data.price_inr, data.fx_rate || lastFxRate);
+    const ts = data.aligned_at || data.timestamp_utc || data.requested_at;
+    const timeLabel = ts ? fmtDateTimeLower(ts) : '--';
+    const alignedNote = data.aligned && data.aligned_at ? ' (aligned)' : '';
+    const tfLabel = data.timeframe ? ` [${data.timeframe}]` : '';
+    result.textContent = `Price at ${timeLabel}${alignedNote}${tfLabel}: ${display}`;
+  } catch (err) {
+    result.textContent = 'Price at timestamp: not found';
+  }
+}
+
 async function loadPrice() {
   try {
     const data = await getJSON('/api/btc/price');
@@ -569,6 +592,14 @@ async function init() {
   document.getElementById('filter-feature').addEventListener('change', applyFilters);
   document.getElementById('filter-text').addEventListener('input', applyFilters);
   document.getElementById('sort-by').addEventListener('change', applyFilters);
+  const priceAtBtn = document.getElementById('price-at-btn');
+  const priceAtInput = document.getElementById('price-at-input');
+  if (priceAtBtn) priceAtBtn.addEventListener('click', queryPriceAt);
+  if (priceAtInput) {
+    priceAtInput.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') queryPriceAt();
+    });
+  }
 
   setInterval(loadPrice, PRICE_POLL_MS);
   setInterval(loadPrediction, PREDICTION_POLL_MS);

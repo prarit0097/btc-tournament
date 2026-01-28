@@ -10,6 +10,7 @@ from btc_tournament.config import TournamentConfig
 
 from .services import (
     get_live_price,
+    get_price_at_timestamp,
     get_scoreboard,
     get_tournament_summary,
     latest_prediction,
@@ -40,6 +41,22 @@ def api_price(request):
     except Exception as exc:
         LOGGER.exception("price error")
         return JsonResponse({"error": str(exc)}, status=502)
+
+
+def api_price_at(request):
+    try:
+        value = request.GET.get("ts")
+        if not value:
+            return JsonResponse({"error": "ts required"}, status=400)
+        data = get_price_at_timestamp(_config(), value)
+        return JsonResponse(data)
+    except ValueError as exc:
+        return JsonResponse({"error": str(exc)}, status=400)
+    except LookupError as exc:
+        return JsonResponse({"error": str(exc)}, status=404)
+    except Exception as exc:
+        LOGGER.exception("price at error")
+        return JsonResponse({"error": str(exc)}, status=500)
 
 
 def api_tournament_summary(request):
