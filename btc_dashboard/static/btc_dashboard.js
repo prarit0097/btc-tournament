@@ -459,6 +459,8 @@ async function runNow() {
   const state = document.getElementById('run-state');
   button.disabled = true;
   state.textContent = 'running...';
+  const localStart = new Date().toISOString();
+  updateRunState({ running: true, last_started_at: localStart });
   try {
     const res = await getJSON('/api/btc/tournament/run', { method: 'POST', body: '{}' });
     state.textContent = res.status || 'started';
