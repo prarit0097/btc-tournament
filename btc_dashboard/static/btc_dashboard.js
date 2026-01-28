@@ -6,6 +6,10 @@ let lastFxRate = null;
 let lastFxUpdatedAt = null;
 let lastFxSource = null;
 let lastForcedRefreshAt = 0;
+let runState = { running: false, last_started_at: null };
+
+const RUN_TIMER_START_KEY = 'btc_run_start';
+const RUN_TIMER_LAST_KEY = 'btc_run_last';
 
 async function getJSON(url, options = {}) {
   const res = await fetch(url, options);
@@ -62,6 +66,68 @@ function fmtDateTimeLower(iso) {
   const text = fmtDateTime(iso);
   if (text === '--') return text;
   return text.replace(' AM', ' am').replace(' PM', ' pm');
+}
+
+function formatElapsed(ms) {
+  if (!ms || ms < 0) return '--';
+  const total = Math.floor(ms / 1000);
+  const hh = Math.floor(total / 3600);
+  const mm = String(Math.floor((total % 3600) / 60)).padStart(2, '0');
+  const ss = String(total % 60).padStart(2, '0');
+  if (hh > 0) return `${hh}:${mm}:${ss}`;
+  return `${mm}:${ss}`;
+}
+
+function renderRunTimer() {
+  const el = document.getElementById('run-timer');
+  if (!el) return;
+
+  if (runState.running) {
+    const startIso = runState.last_started_at || localStorage.getItem(RUN_TIMER_START_KEY);
+    if (!startIso) {
+      el.textContent = 'Timer: --';
+      return;
+    }
+    const start = new Date(startIso).getTime();
+    if (Number.isNaN(start)) {
+      el.textContent = 'Timer: --';
+      return;
+    }
+    el.textContent = `Timer: ${formatElapsed(Date.now() - start)}`;
+    return;
+  }
+
+  const lastMs = localStorage.getItem(RUN_TIMER_LAST_KEY);
+  if (lastMs) {
+    el.textContent = `Last time: ${formatElapsed(Number(lastMs))}`;
+  } else {
+    el.textContent = 'Last time: --';
+  }
+}
+
+function updateRunState(state) {
+  if (!state) return;
+  runState.running = !!state.running;
+  runState.last_started_at = state.last_started_at || runState.last_started_at;
+
+  if (runState.running) {
+    if (runState.last_started_at) {
+      localStorage.setItem(RUN_TIMER_START_KEY, runState.last_started_at);
+    }
+  } else {
+    const startIso = localStorage.getItem(RUN_TIMER_START_KEY);
+    if (startIso) {
+      const start = new Date(startIso).getTime();
+      if (!Number.isNaN(start)) {
+        const elapsed = Date.now() - start;
+        if (elapsed > 0) {
+          localStorage.setItem(RUN_TIMER_LAST_KEY, String(elapsed));
+        }
+      }
+      localStorage.removeItem(RUN_TIMER_START_KEY);
+    }
+  }
+  renderRunTimer();
 }
 
 function normalizePredictions(data) {
@@ -395,6 +461,7 @@ async function runNow() {
     if (!res.running) {
       button.disabled = false;
     }
+    updateRunState(res);
   } catch (err) {
     state.textContent = 'error';
   }
@@ -411,6 +478,7 @@ async function pollRunStatus() {
       badge.textContent = 'idle';
       document.getElementById('run-now').disabled = false;
     }
+    updateRunState(state);
   } catch (err) {
     // ignore
   }
@@ -441,6 +509,7 @@ async function init() {
   await loadScoreboard();
   await refreshPrediction();
   await loadPrediction();
+  await pollRunStatus();
 
   document.getElementById('run-now').addEventListener('click', runNow);
   document.getElementById('filter-target').addEventListener('change', applyFilters);
@@ -455,6 +524,7 @@ async function init() {
   setInterval(loadScoreboard, 60000);
   setInterval(pollRunStatus, 10000);
   setInterval(updateCountdownOnly, 1000);
+  setInterval(renderRunTimer, 1000);
 }
 
 init();
