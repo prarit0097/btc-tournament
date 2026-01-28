@@ -81,6 +81,18 @@ class TournamentConfig:
         env_dl = os.getenv("ENABLE_DL")
         if env_dl is not None:
             self.enable_dl = env_dl.strip().lower() in {"1", "true", "yes", "on"}
+        env_train_days = os.getenv("TRAIN_DAYS")
+        if env_train_days and env_train_days.isdigit():
+            self.train_days = int(env_train_days)
+        env_val_hours = os.getenv("VAL_HOURS")
+        if env_val_hours and env_val_hours.isdigit():
+            self.val_hours = int(env_val_hours)
+        env_test_hours = os.getenv("TEST_HOURS")
+        if env_test_hours and env_test_hours.isdigit():
+            self.test_hours = int(env_test_hours)
+        env_use_test = os.getenv("USE_TEST")
+        if env_use_test is not None:
+            self.use_test = env_use_test.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _timeframe_to_minutes(timeframe: str, fallback: int) -> int:
