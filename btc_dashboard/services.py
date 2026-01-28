@@ -188,7 +188,15 @@ def _parse_user_timestamp(value: str) -> datetime:
     try:
         ts = datetime.fromisoformat(raw)
     except ValueError:
-        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
+        formats = (
+            "%Y-%m-%d %H:%M:%S",
+            "%Y-%m-%d %H:%M",
+            "%d %b %Y, %I:%M:%S %p",
+            "%d %b %Y, %I:%M %p",
+            "%d %b %Y %I:%M:%S %p",
+            "%d %b %Y %I:%M %p",
+        )
+        for fmt in formats:
             try:
                 ts = datetime.strptime(raw, fmt)
                 break
