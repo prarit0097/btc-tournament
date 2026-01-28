@@ -121,6 +121,15 @@ function renderRunTimer() {
   }
 }
 
+function expectedTimeLabel(candidateCount) {
+  if (!candidateCount || candidateCount <= 0) return 'Expected: --';
+  if (candidateCount >= 200) return 'Expected: ~15-30 min';
+  if (candidateCount >= 120) return 'Expected: ~10-20 min';
+  if (candidateCount >= 80) return 'Expected: ~8-15 min';
+  if (candidateCount >= 40) return 'Expected: ~6-12 min';
+  return 'Expected: ~3-8 min';
+}
+
 function updateRunState(state) {
   if (!state) return;
   runState.running = !!state.running;
@@ -378,10 +387,13 @@ async function loadPrice() {
 async function loadSummary() {
   try {
     const data = await getJSON('/api/btc/tournament/summary');
-    document.getElementById('candidate-count').textContent = `${data.candidate_count || 0} models`;
+    const candidateCount = data.candidate_count || 0;
+    document.getElementById('candidate-count').textContent = `${candidateCount} models`;
     document.getElementById('last-run').textContent = `Last run: ${fmtDateTime(data.last_run_at)}`;
     document.getElementById('last-completed').textContent = `Last tournament completed: ${fmtDateTimeLower(data.last_run_at)}`;
     document.getElementById('run-mode').textContent = `mode: ${data.run_mode || '--'}`;
+    const eta = document.getElementById('run-eta');
+    if (eta) eta.textContent = expectedTimeLabel(candidateCount);
 
     const champs = data.champions || {};
     document.getElementById('champ-direction').textContent = `Direction champion: ${champs.direction?.model_id || '--'}`;
