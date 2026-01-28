@@ -21,7 +21,7 @@ class TournamentConfig:
     data_lookback_years: int = 20
     update_every_hours: int = 1
 
-    train_days: int = 90
+    train_days: int = 180
     val_hours: int = 720
     test_hours: int = 24
     use_test: bool = False
@@ -32,8 +32,8 @@ class TournamentConfig:
     champion_margin_override: float = 0.05
     champion_cooldown_hours: int = 6
 
-    max_candidates_total: int = 240
-    max_candidates_per_target: int = 100
+    max_candidates_total: int = 300
+    max_candidates_per_target: int = 120
     max_workers: int = 4
     model_timeout_sec: int = 20
     random_seed: int = 42
@@ -44,7 +44,11 @@ class TournamentConfig:
     run_mode: str = "hourly"
     enable_dl: bool = False
 
-    feature_windows: List[int] = field(default_factory=lambda: [4, 12, 24, 48, 72])
+    ensemble_top_k: int = 3
+    bias_window: int = 20
+    bias_max_abs: float = 0.01
+
+    feature_windows: List[int] = field(default_factory=lambda: [2, 4, 8, 12, 24, 48, 72, 96, 168])
 
     def __post_init__(self) -> None:
         env_timeframes = os.getenv("BTC_TIMEFRAMES")
@@ -81,6 +85,27 @@ class TournamentConfig:
         env_dl = os.getenv("ENABLE_DL")
         if env_dl is not None:
             self.enable_dl = env_dl.strip().lower() in {"1", "true", "yes", "on"}
+        env_k = os.getenv("ENSEMBLE_TOP_K")
+        if env_k and env_k.isdigit():
+            self.ensemble_top_k = max(1, int(env_k))
+        env_bias_window = os.getenv("BIAS_WINDOW")
+        if env_bias_window and env_bias_window.isdigit():
+            self.bias_window = max(1, int(env_bias_window))
+        env_bias_max = os.getenv("BIAS_MAX_ABS")
+        if env_bias_max:
+            try:
+                self.bias_max_abs = float(env_bias_max)
+            except ValueError:
+                pass
+        env_windows = os.getenv("FEATURE_WINDOWS")
+        if env_windows:
+            tokens = [t.strip() for t in env_windows.replace("|", ",").replace(";", ",").split(",") if t.strip()]
+            parsed = []
+            for token in tokens:
+                if token.isdigit():
+                    parsed.append(int(token))
+            if parsed:
+                self.feature_windows = parsed
         env_train_days = os.getenv("TRAIN_DAYS")
         if env_train_days and env_train_days.isdigit():
             self.train_days = int(env_train_days)

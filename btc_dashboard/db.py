@@ -384,6 +384,29 @@ def get_latest_ready_prediction_for_timeframe(timeframe: str) -> Optional[Dict[s
     }
 
 
+def get_recent_ready_predictions(timeframe: str, limit: int) -> List[Dict[str, Any]]:
+    ensure_tables()
+    with connect() as con:
+        cur = con.execute(
+            """
+            SELECT predicted_return, current_price, actual_price_1h
+            FROM btc_predictions
+            WHERE status = 'ready' AND timeframe = ?
+            ORDER BY id DESC LIMIT ?
+            """,
+            (timeframe, limit),
+        )
+        rows = cur.fetchall()
+    return [
+        {
+            "predicted_return": r[0],
+            "current_price": r[1],
+            "actual_price_1h": r[2],
+        }
+        for r in rows
+    ]
+
+
 def get_ohlcv_close_at(timestamp_iso: str, table: str = "ohlcv") -> Optional[float]:
     try:
         with connect() as con:

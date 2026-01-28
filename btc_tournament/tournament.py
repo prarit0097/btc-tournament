@@ -4,7 +4,7 @@ import os
 from concurrent.futures import ProcessPoolExecutor, TimeoutError
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -229,6 +229,39 @@ def _family_label(family: str) -> str:
     return mapping.get(family, family)
 
 
+def _save_model_artifacts(
+    artifacts_dir: Path,
+    model_id: str,
+    model: Any,
+    task: str,
+    feature_set_id: str,
+    feature_cols: List[str],
+    metrics: Dict[str, Any],
+    final_score: float,
+    ts: str,
+    rank: int,
+) -> Tuple[str, str]:
+    import joblib
+
+    safe_rank = max(1, rank)
+    model_path = artifacts_dir / f"{model_id}_{ts}_r{safe_rank}.pkl"
+    meta_path = artifacts_dir / f"{model_id}_{ts}_r{safe_rank}.json"
+    joblib.dump(model, model_path)
+    meta = {
+        "model_id": model_id,
+        "task": task,
+        "timestamp": ts,
+        "rank": safe_rank,
+        "feature_set_id": feature_set_id,
+        "feature_cols": feature_cols,
+        "metrics": metrics,
+        "final_score": final_score,
+    }
+    with meta_path.open("w", encoding="utf8") as f:
+        json.dump(meta, f, indent=2)
+    return str(model_path), str(meta_path)
+
+
 def _filter_by_run_mode(candidates: List[Tuple[ModelSpec, str, List[str]]], run_mode: str) -> List[Tuple[ModelSpec, str, List[str]]]:
     groups = {
         "hourly": {"fast"},
@@ -352,47 +385,72 @@ def run_tournament(config: TournamentConfig) -> Dict[str, Any]:
             r["family"] = family
 
         task_results.sort(key=lambda x: x["final_score"], reverse=True)
-        best = task_results[0]
-
-        best_spec = best["spec"]
-        best_fs_id = best["feature_set_id"]
-        model_id = _model_id(best_spec, best_fs_id)
-
-        record_model_score(registry, best["family"], best["final_score"], config.history_keep)
-
         artifacts_dir = config.data_dir / "models" / task
         artifacts_dir.mkdir(parents=True, exist_ok=True)
         ts = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
-        model_path = artifacts_dir / f"{model_id}_{ts}.pkl"
-        meta_path = artifacts_dir / f"{model_id}_{ts}.json"
+        top_k = max(1, min(config.ensemble_top_k, len(task_results)))
+        ensemble_members: List[Dict[str, Any]] = []
+        best_member: Optional[Dict[str, Any]] = None
 
-        try:
-            import joblib
-            joblib.dump(best["model"], model_path)
-            meta = {
+        for rank, r in enumerate(task_results[:top_k], start=1):
+            spec = r["spec"]
+            fs_id = r["feature_set_id"]
+            model_id = _model_id(spec, fs_id)
+            model_path = None
+            meta_path = None
+            try:
+                model_path, meta_path = _save_model_artifacts(
+                    artifacts_dir,
+                    model_id,
+                    r["model"],
+                    task,
+                    fs_id,
+                    feature_sets_map.get(fs_id, []),
+                    r["metrics"],
+                    r["final_score"],
+                    ts,
+                    rank,
+                )
+            except Exception as exc:
+                LOGGER.warning("Failed to save model artifacts: %s", exc)
+
+            member = {
+                "rank": rank,
                 "model_id": model_id,
-                "task": task,
-                "timestamp": ts,
-                "feature_set_id": best_fs_id,
-                "feature_cols": feature_sets_map.get(best_fs_id, []),
-                "metrics": best["metrics"],
-                "final_score": best["final_score"],
+                "model_path": model_path,
+                "meta_path": meta_path,
+                "feature_set_id": fs_id,
+                "feature_cols": feature_sets_map.get(fs_id, []),
+                "final_score": r["final_score"],
+                "family": r["family"],
             }
-            with meta_path.open("w", encoding="utf8") as f:
-                json.dump(meta, f, indent=2)
-        except Exception as exc:
-            LOGGER.warning("Failed to save model artifacts: %s", exc)
+            if model_path:
+                ensemble_members.append(member)
+            if rank == 1:
+                best_member = member
+
+        best = task_results[0]
+        record_model_score(registry, best["family"], best["final_score"], config.history_keep)
+        best_model_id = _model_id(best["spec"], best["feature_set_id"])
+        best_fs_id = best["feature_set_id"]
+        best_model_path = best_member["model_path"] if best_member else None
 
         challenger = {
-            "model_id": model_id,
+            "model_id": best_model_id,
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "final_score": best["final_score"],
             "metrics": best["metrics"],
             "val_points": int(len(split.val)),
-            "model_path": str(model_path),
+            "model_path": best_model_path,
             "feature_cols": feature_sets_map.get(best_fs_id, []),
             "feature_set_id": best_fs_id,
             "family": best["family"],
+        }
+
+        registry.setdefault("ensembles", {})[task] = {
+            "k": top_k,
+            "members": ensemble_members,
+            "run_at": run_at,
         }
 
         decision = update_champion(

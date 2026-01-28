@@ -14,6 +14,7 @@ class ChampionDecision:
 def _default_registry() -> Dict[str, Any]:
     return {
         "champions": {},
+        "ensembles": {},
         "history": {"direction": [], "return": [], "range": []},
         "model_history": {},
     }

@@ -21,6 +21,7 @@ from .db import (
     get_latest_ready_prediction_for_timeframe,
     get_latest_run,
     get_ohlcv_close_at,
+    get_recent_ready_predictions,
     get_scores,
     insert_prediction,
     list_pending_predictions,
@@ -337,6 +338,58 @@ def _predict_return_from_champion(config: TournamentConfig, latest_row: pd.DataF
     }
 
 
+def _predict_return_from_ensemble(config: TournamentConfig, latest_row: pd.DataFrame) -> Optional[Dict[str, Any]]:
+    reg = _load_registry(config.registry_path)
+    ensemble = reg.get("ensembles", {}).get("return")
+    if not ensemble:
+        return None
+    members = ensemble.get("members") or []
+    if not members:
+        return None
+
+    import joblib
+
+    preds: List[float] = []
+    weights: List[float] = []
+    used_members: List[str] = []
+    for member in members:
+        model_path = member.get("model_path")
+        if not model_path:
+            continue
+        if not Path(model_path).exists():
+            continue
+        model = joblib.load(model_path)
+        feature_cols = _resolve_feature_cols(model, member.get("feature_cols", []))
+        X = latest_row.reindex(columns=feature_cols, fill_value=0.0)
+        pred_val = float(model.predict(X)[0])
+        if not np.isfinite(pred_val):
+            continue
+        preds.append(pred_val)
+        weight = member.get("final_score")
+        try:
+            weight_val = float(weight) if weight is not None else 1.0
+        except (TypeError, ValueError):
+            weight_val = 1.0
+        weights.append(max(0.0, weight_val))
+        used_members.append(member.get("model_id", "unknown"))
+
+    if not preds:
+        return None
+
+    if sum(weights) > 0:
+        predicted_return = float(np.average(preds, weights=weights))
+    else:
+        predicted_return = float(np.mean(preds))
+
+    return {
+        "predicted_return": predicted_return,
+        "model_name": f"ensemble_top{len(preds)}",
+        "feature_set": "ensemble",
+        "ensemble_members": used_members,
+        "ensemble_size": len(preds),
+    }
+
+
 def _predict_return_from_direction(config: TournamentConfig, latest_row: pd.DataFrame, df: pd.DataFrame) -> Optional[Dict[str, Any]]:
     reg = _load_registry(config.registry_path)
     champ = reg.get("champions", {}).get("direction")
@@ -387,6 +440,39 @@ def _compute_match_metrics(predicted: Optional[float], actual: Optional[float]) 
     if abs_diff > MATCH_EPS:
         match = min(match, MATCH_MAX_NONZERO)
     return {"abs_diff": abs_diff, "pct_error": pct_error, "match_percent": match}
+
+
+def _get_recent_bias(config: TournamentConfig, timeframe: str) -> float:
+    limit = max(1, int(config.bias_window))
+    rows = get_recent_ready_predictions(timeframe, limit)
+    if not rows:
+        return 0.0
+    errors: List[float] = []
+    for row in rows:
+        predicted_ret = row.get("predicted_return")
+        actual_price = row.get("actual_price_1h")
+        current_price = row.get("current_price")
+        if predicted_ret is None or actual_price is None or current_price is None:
+            continue
+        try:
+            actual_val = float(actual_price)
+            current_val = float(current_price)
+            predicted_val = float(predicted_ret)
+        except (TypeError, ValueError):
+            continue
+        if actual_val <= 0 or current_val <= 0:
+            continue
+        actual_ret = float(np.log(actual_val / current_val))
+        err = actual_ret - predicted_val
+        if np.isfinite(err):
+            errors.append(err)
+    if not errors:
+        return 0.0
+    bias = float(np.mean(errors))
+    max_abs = float(config.bias_max_abs)
+    if max_abs > 0:
+        bias = max(-max_abs, min(max_abs, bias))
+    return bias
 
 
 def _apply_match_fields(row: Dict[str, Any]) -> Dict[str, Any]:
@@ -488,8 +574,10 @@ def refresh_prediction(config: TournamentConfig) -> Dict[str, Any]:
             continue
         latest_row = sup.iloc[-1:]
 
-        pred = _predict_return_from_champion(tf_cfg, latest_row)
+        pred = _predict_return_from_ensemble(tf_cfg, latest_row)
         prediction_target = "return"
+        if pred is None:
+            pred = _predict_return_from_champion(tf_cfg, latest_row)
         if pred is None:
             pred = _predict_return_from_direction(tf_cfg, latest_row, df)
             prediction_target = "direction"
@@ -505,6 +593,8 @@ def refresh_prediction(config: TournamentConfig) -> Dict[str, Any]:
             continue
 
         predicted_return = float(pred["predicted_return"])
+        bias = _get_recent_bias(tf_cfg, timeframe)
+        predicted_return = float(predicted_return + bias)
         predicted_price = float(live_price) * float(np.exp(predicted_return))
 
         record = {
@@ -525,6 +615,10 @@ def refresh_prediction(config: TournamentConfig) -> Dict[str, Any]:
         }
         pred_id = insert_prediction(record)
         record["id"] = pred_id
+        record["bias_correction"] = bias
+        if pred.get("ensemble_members"):
+            record["ensemble_members"] = pred.get("ensemble_members")
+            record["ensemble_size"] = pred.get("ensemble_size")
         _apply_match_fields(record)
         predictions.append(record)
 
