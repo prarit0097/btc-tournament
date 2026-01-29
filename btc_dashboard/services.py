@@ -43,8 +43,36 @@ MATCH_MAX_NONZERO = 99.9999
 
 _RUN_LOCK = threading.Lock()
 _RUN_STATE = {"running": False, "last_started_at": None}
+_RUN_STATE_PATH = Path("data") / "run_state.json"
 _PRICE_CACHE: Dict[str, Any] = {}
 _FX_CACHE: Dict[str, Any] = {}
+
+
+def _parse_iso(value: Optional[str]) -> Optional[datetime]:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        if value.endswith("Z"):
+            try:
+                return datetime.fromisoformat(value[:-1])
+            except ValueError:
+                return None
+    return None
+
+
+def _read_run_state_file() -> Optional[Dict[str, Any]]:
+    if not _RUN_STATE_PATH.exists():
+        return None
+    try:
+        with _RUN_STATE_PATH.open("r", encoding="utf8") as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            return data
+    except Exception:
+        return None
+    return None
 
 
 def _load_registry(path: Path) -> Dict[str, Any]:
@@ -421,6 +449,7 @@ def _predict_return_from_ensemble(config: TournamentConfig, latest_row: pd.DataF
     preds: List[float] = []
     weights: List[float] = []
     used_members: List[str] = []
+    pred_map: Dict[str, float] = {}
     for member in members:
         model_path = member.get("model_path")
         if not model_path:
@@ -440,19 +469,39 @@ def _predict_return_from_ensemble(config: TournamentConfig, latest_row: pd.DataF
         except (TypeError, ValueError):
             weight_val = 1.0
         weights.append(max(0.0, weight_val))
-        used_members.append(member.get("model_id", "unknown"))
+        model_id = member.get("model_id", "unknown")
+        used_members.append(model_id)
+        pred_map[model_id] = pred_val
 
     if not preds:
         return None
 
-    if sum(weights) > 0:
-        predicted_return = float(np.average(preds, weights=weights))
-    else:
-        predicted_return = float(np.mean(preds))
+    predicted_return: Optional[float] = None
+    used_stacking = False
+    stacking = ensemble.get("stacking") or {}
+    stacking_path = stacking.get("model_path")
+    stacking_ids = stacking.get("member_ids") or []
+    if stacking_path and stacking_ids and Path(stacking_path).exists():
+        try:
+            if all(mid in pred_map for mid in stacking_ids):
+                meta = joblib.load(stacking_path)
+                X_meta = np.array([pred_map[mid] for mid in stacking_ids], dtype=float).reshape(1, -1)
+                meta_pred = float(meta.predict(X_meta)[0])
+                if np.isfinite(meta_pred):
+                    predicted_return = meta_pred
+                    used_stacking = True
+        except Exception:
+            predicted_return = None
+
+    if predicted_return is None:
+        if sum(weights) > 0:
+            predicted_return = float(np.average(preds, weights=weights))
+        else:
+            predicted_return = float(np.mean(preds))
 
     return {
         "predicted_return": predicted_return,
-        "model_name": f"ensemble_top{len(preds)}",
+        "model_name": "stacked_ridge" if used_stacking else f"ensemble_top{len(preds)}",
         "feature_set": "ensemble",
         "ensemble_members": used_members,
         "ensemble_size": len(preds),
@@ -809,7 +858,29 @@ def latest_prediction(config: TournamentConfig, update_pending: bool = True) -> 
 
 
 def run_status() -> Dict[str, Any]:
-    return dict(_RUN_STATE)
+    state = dict(_RUN_STATE)
+    file_state = _read_run_state_file()
+    if not file_state:
+        return state
+
+    running = bool(state.get("running") or file_state.get("running"))
+    state["running"] = running
+
+    file_started = _parse_iso(file_state.get("last_started_at"))
+    mem_started = _parse_iso(state.get("last_started_at"))
+    if file_started and (not mem_started or file_started > mem_started):
+        state["last_started_at"] = file_state.get("last_started_at")
+
+    if file_state.get("last_finished_at"):
+        state["last_finished_at"] = file_state.get("last_finished_at")
+
+    started = _parse_iso(state.get("last_started_at"))
+    finished = _parse_iso(state.get("last_finished_at"))
+    if started and finished:
+        duration = max(0.0, (finished - started).total_seconds())
+        state["duration_seconds"] = duration
+
+    return state
 
 
 def _run_tournament_thread(config: TournamentConfig) -> None:

@@ -35,6 +35,28 @@ def _update_predictions_safe(config) -> None:
 
 
 LOGGER = logging.getLogger("btc_tournament")
+_RUN_STATE_PATH = Path("data") / "run_state.json"
+
+
+def _write_run_state(
+    running: bool,
+    started_at: Optional[str],
+    finished_at: Optional[str],
+    status: str,
+) -> None:
+    payload = {
+        "running": bool(running),
+        "last_started_at": started_at,
+        "last_finished_at": finished_at,
+        "status": status,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "source": "tournament",
+    }
+    _RUN_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    tmp = _RUN_STATE_PATH.with_suffix(".tmp")
+    with tmp.open("w", encoding="utf8") as f:
+        json.dump(payload, f)
+    tmp.replace(_RUN_STATE_PATH)
 
 
 def _setup_logging(log_path: Path) -> None:
@@ -210,6 +232,12 @@ def _family_label(family: str) -> str:
     mapping = {
         "logreg": "linear",
         "sgd": "linear",
+        "ridge": "linear",
+        "lasso": "linear",
+        "enet": "linear",
+        "svr": "svm",
+        "knn": "instance",
+        "ada": "boosting",
         "rf": "forest",
         "et": "forest",
         "gb": "boosting",
@@ -294,239 +322,280 @@ def run_tournament(config: TournamentConfig) -> Dict[str, Any]:
     _setup_logging(config.log_path)
     LOGGER.info("Starting tournament")
     run_started_at = datetime.now(timezone.utc)
+    _write_run_state(True, run_started_at.isoformat(), None, "running")
+    error: Optional[Exception] = None
 
-    df, coverage = _prep_data(config)
-    if df.empty:
-        raise RuntimeError("No data available")
+    try:
+        df, coverage = _prep_data(config)
+        if df.empty:
+            raise RuntimeError("No data available")
 
-    sup, feature_sets_map = _build_dataset(df, config)
-    split = walk_forward_split(sup, config.train_days, config.val_hours, config.test_hours, config.use_test)
+        sup, feature_sets_map = _build_dataset(df, config)
+        split = walk_forward_split(sup, config.train_days, config.val_hours, config.test_hours, config.use_test)
 
-    registry = load_registry(config.registry_path)
+        registry = load_registry(config.registry_path)
 
-    results: Dict[str, Any] = {"coverage": coverage}
-    run_finished_at = datetime.now(timezone.utc)
-    run_at = run_finished_at.isoformat()
+        results: Dict[str, Any] = {"coverage": coverage}
+        run_finished_at = datetime.now(timezone.utc)
+        run_at = run_finished_at.isoformat()
 
-    run_mode = _resolve_run_mode(config)
+        run_mode = _resolve_run_mode(config)
 
-    per_task_candidates: Dict[str, List[Tuple[ModelSpec, str, List[str]]]] = {}
-    for task in ["direction", "return", "range"]:
-        specs = get_candidates(task, config.max_candidates_per_target, config.enable_dl)
-        candidates = []
-        for fs_id, cols in feature_sets_map.items():
-            if not cols:
-                continue
-            for spec in specs:
-                candidates.append((spec, fs_id, cols))
-        candidates = _filter_by_run_mode(candidates, run_mode)
-        # Drop candidates whose required features are missing in feature set
-        filtered = []
-        for spec, fs_id, cols in candidates:
-            req = spec.meta.get("required_features", [])
-            if all(r in cols for r in req):
-                filtered.append((spec, fs_id, cols))
-        candidates = filtered
-        if len(candidates) > config.max_candidates_per_target:
-            candidates = _cap_candidates(candidates, config.max_candidates_per_target, config.random_seed)
-        per_task_candidates[task] = candidates
+        per_task_candidates: Dict[str, List[Tuple[ModelSpec, str, List[str]]]] = {}
+        for task in ["direction", "return", "range"]:
+            specs = get_candidates(task, config.max_candidates_per_target, config.enable_dl)
+            candidates = []
+            for fs_id, cols in feature_sets_map.items():
+                if not cols:
+                    continue
+                for spec in specs:
+                    candidates.append((spec, fs_id, cols))
+            candidates = _filter_by_run_mode(candidates, run_mode)
+            # Drop candidates whose required features are missing in feature set
+            filtered = []
+            for spec, fs_id, cols in candidates:
+                req = spec.meta.get("required_features", [])
+                if all(r in cols for r in req):
+                    filtered.append((spec, fs_id, cols))
+            candidates = filtered
+            if len(candidates) > config.max_candidates_per_target:
+                candidates = _cap_candidates(candidates, config.max_candidates_per_target, config.random_seed)
+            per_task_candidates[task] = candidates
 
-    all_candidates = [c for task in per_task_candidates for c in per_task_candidates[task]]
-    if len(all_candidates) > config.max_candidates_total:
-        capped = _cap_candidates(all_candidates, config.max_candidates_total, config.random_seed)
-        per_task_candidates = {"direction": [], "return": [], "range": []}
-        for spec, fs_id, cols in capped:
-            per_task_candidates[spec.task].append((spec, fs_id, cols))
+        all_candidates = [c for task in per_task_candidates for c in per_task_candidates[task]]
+        if len(all_candidates) > config.max_candidates_total:
+            capped = _cap_candidates(all_candidates, config.max_candidates_total, config.random_seed)
+            per_task_candidates = {"direction": [], "return": [], "range": []}
+            for spec, fs_id, cols in capped:
+                per_task_candidates[spec.task].append((spec, fs_id, cols))
 
-    candidate_count_total = sum(len(per_task_candidates[t]) for t in per_task_candidates)
-    scoreboard_rows = []
+        candidate_count_total = sum(len(per_task_candidates[t]) for t in per_task_candidates)
+        scoreboard_rows = []
 
-    for task in ["direction", "return", "range"]:
-        candidates = per_task_candidates.get(task, [])
-        LOGGER.info("Task %s candidates %d", task, len(candidates))
+        for task in ["direction", "return", "range"]:
+            candidates = per_task_candidates.get(task, [])
+            LOGGER.info("Task %s candidates %d", task, len(candidates))
 
-        jobs = [(spec, task, fs_id, split.train, split.val, cols, config) for spec, fs_id, cols in candidates]
-        task_results = []
+            jobs = [(spec, task, fs_id, split.train, split.val, cols, config) for spec, fs_id, cols in candidates]
+            task_results = []
 
-        use_workers = config.max_workers
-        if any(spec.name.startswith("lgb_") for spec, _, _ in candidates):
-            use_workers = 1
+            use_workers = config.max_workers
+            if any(spec.name.startswith("lgb_") for spec, _, _ in candidates):
+                use_workers = 1
 
-        if use_workers > 1:
-            with ProcessPoolExecutor(max_workers=use_workers) as ex:
-                futures = {ex.submit(_evaluate_candidate, j): j[0] for j in jobs}
-                for fut in futures:
-                    spec = futures[fut]
+            if use_workers > 1:
+                with ProcessPoolExecutor(max_workers=use_workers) as ex:
+                    futures = {ex.submit(_evaluate_candidate, j): j[0] for j in jobs}
+                    for fut in futures:
+                        spec = futures[fut]
+                        try:
+                            res = fut.result(timeout=config.model_timeout_sec)
+                            task_results.append(res)
+                        except TimeoutError:
+                            LOGGER.info("Timeout: %s", spec.name)
+                        except Exception as exc:
+                            LOGGER.warning("Failed: %s %s", spec.name, exc)
+            else:
+                for j in jobs:
+                    spec = j[0]
                     try:
-                        res = fut.result(timeout=config.model_timeout_sec)
+                        res = _evaluate_candidate(j)
                         task_results.append(res)
-                    except TimeoutError:
-                        LOGGER.info("Timeout: %s", spec.name)
                     except Exception as exc:
                         LOGGER.warning("Failed: %s %s", spec.name, exc)
-        else:
-            for j in jobs:
-                spec = j[0]
+
+            if not task_results:
+                LOGGER.warning("No valid models for %s", task)
+                continue
+
+            for r in task_results:
+                spec = r["spec"]
+                family = spec.meta.get("family", spec.name)
+                stab = stability_penalty(registry, family)
+                final = _final_score(r["trading"], r["primary"], stab, config)
+                r["final_score"] = final
+                r["stability"] = stab
+                r["family"] = family
+
+            task_results.sort(key=lambda x: x["final_score"], reverse=True)
+            artifacts_dir = config.data_dir / "models" / task
+            artifacts_dir.mkdir(parents=True, exist_ok=True)
+            ts = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+            top_k = max(1, min(config.ensemble_top_k, len(task_results)))
+            ensemble_members: List[Dict[str, Any]] = []
+            best_member: Optional[Dict[str, Any]] = None
+
+            for rank, r in enumerate(task_results[:top_k], start=1):
+                spec = r["spec"]
+                fs_id = r["feature_set_id"]
+                model_id = _model_id(spec, fs_id)
+                model_path = None
+                meta_path = None
                 try:
-                    res = _evaluate_candidate(j)
-                    task_results.append(res)
+                    model_path, meta_path = _save_model_artifacts(
+                        artifacts_dir,
+                        model_id,
+                        r["model"],
+                        task,
+                        fs_id,
+                        feature_sets_map.get(fs_id, []),
+                        r["metrics"],
+                        r["final_score"],
+                        ts,
+                        rank,
+                    )
                 except Exception as exc:
-                    LOGGER.warning("Failed: %s %s", spec.name, exc)
+                    LOGGER.warning("Failed to save model artifacts: %s", exc)
 
-        if not task_results:
-            LOGGER.warning("No valid models for %s", task)
-            continue
-
-        for r in task_results:
-            spec = r["spec"]
-            family = spec.meta.get("family", spec.name)
-            stab = stability_penalty(registry, family)
-            final = _final_score(r["trading"], r["primary"], stab, config)
-            r["final_score"] = final
-            r["stability"] = stab
-            r["family"] = family
-
-        task_results.sort(key=lambda x: x["final_score"], reverse=True)
-        artifacts_dir = config.data_dir / "models" / task
-        artifacts_dir.mkdir(parents=True, exist_ok=True)
-        ts = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
-        top_k = max(1, min(config.ensemble_top_k, len(task_results)))
-        ensemble_members: List[Dict[str, Any]] = []
-        best_member: Optional[Dict[str, Any]] = None
-
-        for rank, r in enumerate(task_results[:top_k], start=1):
-            spec = r["spec"]
-            fs_id = r["feature_set_id"]
-            model_id = _model_id(spec, fs_id)
-            model_path = None
-            meta_path = None
-            try:
-                model_path, meta_path = _save_model_artifacts(
-                    artifacts_dir,
-                    model_id,
-                    r["model"],
-                    task,
-                    fs_id,
-                    feature_sets_map.get(fs_id, []),
-                    r["metrics"],
-                    r["final_score"],
-                    ts,
-                    rank,
-                )
-            except Exception as exc:
-                LOGGER.warning("Failed to save model artifacts: %s", exc)
-
-            member = {
-                "rank": rank,
-                "model_id": model_id,
-                "model_path": model_path,
-                "meta_path": meta_path,
-                "feature_set_id": fs_id,
-                "feature_cols": feature_sets_map.get(fs_id, []),
-                "final_score": r["final_score"],
-                "family": r["family"],
-            }
-            if model_path:
-                ensemble_members.append(member)
-            if rank == 1:
-                best_member = member
-
-        best = task_results[0]
-        record_model_score(registry, best["family"], best["final_score"], config.history_keep)
-        best_model_id = _model_id(best["spec"], best["feature_set_id"])
-        best_fs_id = best["feature_set_id"]
-        best_model_path = best_member["model_path"] if best_member else None
-
-        challenger = {
-            "model_id": best_model_id,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "final_score": best["final_score"],
-            "metrics": best["metrics"],
-            "val_points": int(len(split.val)),
-            "model_path": best_model_path,
-            "feature_cols": feature_sets_map.get(best_fs_id, []),
-            "feature_set_id": best_fs_id,
-            "family": best["family"],
-        }
-
-        registry.setdefault("ensembles", {})[task] = {
-            "k": top_k,
-            "members": ensemble_members,
-            "run_at": run_at,
-        }
-
-        decision = update_champion(
-            registry,
-            task,
-            challenger,
-            config.min_val_points,
-            config.champion_margin,
-            config.champion_margin_override,
-            config.champion_cooldown_hours,
-        )
-
-        registry["history"][task].append({
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "best": challenger,
-            "decision": decision.reason,
-            "coverage": coverage,
-            "run_mode": run_mode,
-        })
-        registry["history"][task] = registry["history"][task][-config.history_keep:]
-
-        results[task] = {
-            "best": challenger,
-            "decision": decision.reason,
-            "top_scores": [
-                {"model_id": _model_id(r["spec"], r["feature_set_id"]), "final_score": r["final_score"]}
-                for r in task_results[:5]
-            ],
-        }
-
-        for idx, r in enumerate(task_results, start=1):
-            metric_name = "accuracy" if task == "direction" else "MAE" if task == "return" else "pinball"
-            metric_value = r["metrics"].get("accuracy") if task == "direction" else r["metrics"].get("mae") if task == "return" else r["metrics"].get("pinball")
-            model_name = r["spec"].model.__class__.__name__ if hasattr(r["spec"], "model") else r["spec"].name
-            scoreboard_rows.append(
-                {
-                    "rank": idx,
-                    "target": task,
-                    "feature_set": r.get("feature_set_id"),
-                    "model_name": model_name,
-                    "family": _family_label(r.get("family", "")),
-                    "final_score": r.get("final_score"),
-                    "primary_metric_name": metric_name,
-                    "primary_metric_value": metric_value,
-                    "trading_score": r.get("trading"),
-                    "stability_penalty": r.get("stability"),
-                    "is_champion": idx == 1,
-                    "run_at": run_at,
+                member = {
+                    "rank": rank,
+                    "model_id": model_id,
+                    "model_path": model_path,
+                    "meta_path": meta_path,
+                    "feature_set_id": fs_id,
+                    "feature_cols": feature_sets_map.get(fs_id, []),
+                    "final_score": r["final_score"],
+                    "family": r["family"],
                 }
+                if model_path:
+                    ensemble_members.append(member)
+                if rank == 1:
+                    best_member = member
+
+            stacking_info = None
+            if task == "return" and len(ensemble_members) >= 2:
+                try:
+                    import joblib
+                    from sklearn.linear_model import Ridge
+
+                    member_ids = [m["model_id"] for m in ensemble_members]
+                    preds_map = {
+                        _model_id(r["spec"], r["feature_set_id"]): r["y_pred"]
+                        for r in task_results
+                    }
+                    if all(mid in preds_map for mid in member_ids):
+                        X_meta = np.column_stack([preds_map[mid] for mid in member_ids])
+                        y_true = split.val["y_ret"].values
+                        if len(y_true) == X_meta.shape[0]:
+                            meta = Ridge(alpha=1.0)
+                            meta.fit(X_meta, y_true)
+                            meta_path = artifacts_dir / f"stacking_{ts}.pkl"
+                            joblib.dump(meta, meta_path)
+                            stacking_info = {
+                                "model_path": str(meta_path),
+                                "member_ids": member_ids,
+                                "model": "ridge",
+                                "timestamp": datetime.now(timezone.utc).isoformat(),
+                            }
+                except Exception as exc:
+                    LOGGER.warning("Failed to build stacking model: %s", exc)
+
+            best = task_results[0]
+            record_model_score(registry, best["family"], best["final_score"], config.history_keep)
+            best_model_id = _model_id(best["spec"], best["feature_set_id"])
+            best_fs_id = best["feature_set_id"]
+            best_model_path = best_member["model_path"] if best_member else None
+
+            challenger = {
+                "model_id": best_model_id,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "final_score": best["final_score"],
+                "metrics": best["metrics"],
+                "val_points": int(len(split.val)),
+                "model_path": best_model_path,
+                "feature_cols": feature_sets_map.get(best_fs_id, []),
+                "feature_set_id": best_fs_id,
+                "family": best["family"],
+            }
+
+            ensemble_record = {
+                "k": top_k,
+                "members": ensemble_members,
+                "run_at": run_at,
+            }
+            if stacking_info:
+                ensemble_record["stacking"] = stacking_info
+            registry.setdefault("ensembles", {})[task] = ensemble_record
+
+            decision = update_champion(
+                registry,
+                task,
+                challenger,
+                config.min_val_points,
+                config.champion_margin,
+                config.champion_margin_override,
+                config.champion_cooldown_hours,
             )
 
-    save_registry(config.registry_path, registry)
-    try:
-        duration_seconds = (run_finished_at - run_started_at).total_seconds()
-        run_id = insert_run(
-            run_at,
-            run_mode,
-            candidate_count_total,
-            run_started_at=run_started_at.isoformat(),
-            run_finished_at=run_finished_at.isoformat(),
-            duration_seconds=duration_seconds,
-            max_workers=config.max_workers,
-            timeframe=config.timeframe,
-            candle_minutes=config.candle_minutes,
-            train_days=config.train_days,
-            val_hours=config.val_hours,
-            max_candidates_total=config.max_candidates_total,
-            max_candidates_per_target=config.max_candidates_per_target,
-            enable_dl=config.enable_dl,
-            ensemble_top_k=config.ensemble_top_k,
-        )
-        insert_scores(run_id, scoreboard_rows)
+            registry["history"][task].append({
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "best": challenger,
+                "decision": decision.reason,
+                "coverage": coverage,
+                "run_mode": run_mode,
+            })
+            registry["history"][task] = registry["history"][task][-config.history_keep:]
+
+            results[task] = {
+                "best": challenger,
+                "decision": decision.reason,
+                "top_scores": [
+                    {"model_id": _model_id(r["spec"], r["feature_set_id"]), "final_score": r["final_score"]}
+                    for r in task_results[:5]
+                ],
+            }
+
+            for idx, r in enumerate(task_results, start=1):
+                metric_name = "accuracy" if task == "direction" else "MAE" if task == "return" else "pinball"
+                metric_value = r["metrics"].get("accuracy") if task == "direction" else r["metrics"].get("mae") if task == "return" else r["metrics"].get("pinball")
+                model_name = r["spec"].model.__class__.__name__ if hasattr(r["spec"], "model") else r["spec"].name
+                scoreboard_rows.append(
+                    {
+                        "rank": idx,
+                        "target": task,
+                        "feature_set": r.get("feature_set_id"),
+                        "model_name": model_name,
+                        "family": _family_label(r.get("family", "")),
+                        "final_score": r.get("final_score"),
+                        "primary_metric_name": metric_name,
+                        "primary_metric_value": metric_value,
+                        "trading_score": r.get("trading"),
+                        "stability_penalty": r.get("stability"),
+                        "is_champion": idx == 1,
+                        "run_at": run_at,
+                    }
+                )
+
+        save_registry(config.registry_path, registry)
+        try:
+            duration_seconds = (run_finished_at - run_started_at).total_seconds()
+            run_id = insert_run(
+                run_at,
+                run_mode,
+                candidate_count_total,
+                run_started_at=run_started_at.isoformat(),
+                run_finished_at=run_finished_at.isoformat(),
+                duration_seconds=duration_seconds,
+                max_workers=config.max_workers,
+                timeframe=config.timeframe,
+                candle_minutes=config.candle_minutes,
+                train_days=config.train_days,
+                val_hours=config.val_hours,
+                max_candidates_total=config.max_candidates_total,
+                max_candidates_per_target=config.max_candidates_per_target,
+                enable_dl=config.enable_dl,
+                ensemble_top_k=config.ensemble_top_k,
+            )
+            insert_scores(run_id, scoreboard_rows)
+        except Exception as exc:
+            LOGGER.warning("Failed to store scoreboard: %s", exc)
+        _update_predictions_safe(config)
+        LOGGER.info("Tournament complete")
+        return results
     except Exception as exc:
-        LOGGER.warning("Failed to store scoreboard: %s", exc)
-    _update_predictions_safe(config)
-    LOGGER.info("Tournament complete")
-    return results
+        error = exc
+        raise
+    finally:
+        finished_at = datetime.now(timezone.utc).isoformat()
+        status = "error" if error else "ok"
+        _write_run_state(False, run_started_at.isoformat(), finished_at, status)

@@ -7,12 +7,12 @@ let lastFxUpdatedAt = null;
 let lastFxSource = null;
 let lastForcedRefreshAt = 0;
 let runState = { running: false, last_started_at: null };
+let lastSummaryRunAt = null;
 
 const PRICE_POLL_MS = 30000;
 const PREDICTION_POLL_MS = 30000;
-const REFRESH_POLL_MS = 30000;
-const SUMMARY_POLL_MS = 120000;
-const SCOREBOARD_POLL_MS = 120000;
+const SUMMARY_POLL_MS = 30000;
+const SCOREBOARD_POLL_MS = 60000;
 const RUN_STATUS_POLL_MS = 15000;
 const COUNTDOWN_TICK_MS = 1000;
 
@@ -155,6 +155,17 @@ function updateRunState(state) {
         }
       }
       localStorage.removeItem(RUN_TIMER_START_KEY);
+    } else if (state.duration_seconds) {
+      const durationMs = Math.max(0, Number(state.duration_seconds) * 1000);
+      if (Number.isFinite(durationMs) && durationMs > 0) {
+        localStorage.setItem(RUN_TIMER_LAST_KEY, String(durationMs));
+      }
+    } else if (state.last_started_at && state.last_finished_at) {
+      const started = new Date(state.last_started_at).getTime();
+      const finished = new Date(state.last_finished_at).getTime();
+      if (!Number.isNaN(started) && !Number.isNaN(finished) && finished > started) {
+        localStorage.setItem(RUN_TIMER_LAST_KEY, String(finished - started));
+      }
     }
   }
   renderRunTimer();
@@ -205,14 +216,14 @@ function formatCountdown(predictedAt, horizonMin) {
 function statusText(pred) {
   if (!pred) return '--';
   if (pred.match_percent_precise !== null && pred.match_percent_precise !== undefined) {
-    return formatMatch(pred);
+    return formatMatchPercent(pred);
   }
   if (pred.match_percent !== null && pred.match_percent !== undefined) {
-    return formatMatch(pred);
+    return formatMatchPercent(pred);
   }
   if (pred.status === 'pending') {
     const horizonMin = predictionMinutes(pred);
-    return `Pending (in ${formatCountdown(pred.predicted_at, horizonMin)})`;
+    return `Next match in ${formatCountdown(pred.predicted_at, horizonMin)}`;
   }
   if (pred.status && pred.status !== 'ready') {
     return pred.status.replace('_', ' ');
@@ -220,17 +231,26 @@ function statusText(pred) {
   return '--';
 }
 
-function formatMatch(pred) {
+function formatMatchPercent(pred) {
   if (!pred) return '--';
   const hasPrecise = pred.match_percent_precise !== null && pred.match_percent_precise !== undefined;
   const matchVal = hasPrecise ? pred.match_percent_precise : pred.match_percent;
   if (matchVal === null || matchVal === undefined || Number.isNaN(matchVal)) return '--';
   const digits = hasPrecise ? 4 : 1;
-  let text = `${fmtFixed(matchVal, digits)}%`;
-  if (pred.abs_diff_usd !== null && pred.abs_diff_usd !== undefined && !Number.isNaN(pred.abs_diff_usd)) {
-    text += ` (Δ$${fmtFixed(pred.abs_diff_usd, 2)})`;
-  }
-  return text;
+  return `${fmtFixed(matchVal, digits)}%`;
+}
+
+function formatDiffHtml(pred) {
+  if (!pred) return '';
+  const predicted = pred.predicted_price;
+  const actual = pred.actual_price;
+  if (predicted === null || predicted === undefined || Number.isNaN(predicted)) return '';
+  if (actual === null || actual === undefined || Number.isNaN(actual)) return '';
+  const diff = Number(predicted) - Number(actual);
+  const sign = diff > 0 ? '+' : diff < 0 ? '-' : '';
+  const signClass = diff > 0 ? 'diff-plus' : diff < 0 ? 'diff-minus' : '';
+  const absVal = Math.abs(diff);
+  return ` | <span class="diff-label">Difference:</span> <span class="diff-value"><span class="${signClass}">${sign}</span>$${fmtFixed(absVal, 2)}</span>`;
 }
 
 function renderPriceRow(primary, nowPriceUsd, nowPriceInr) {
@@ -242,7 +262,7 @@ function renderPriceRow(primary, nowPriceUsd, nowPriceInr) {
   if (!primary) {
     document.getElementById('price-now').textContent = `BTC Now: ${nowDisplay}`;
     document.getElementById('price-row').innerHTML = '<span class="price-left">Predicted: -- | Match: --</span><span class="price-right"></span>';
-    if (lastLine) lastLine.textContent = 'Last predicted price: --';
+    if (lastLine) lastLine.textContent = 'Last matched prediction: --';
     if (actualLine) actualLine.textContent = 'Actual price at match time: --';
     return;
   }
@@ -258,7 +278,7 @@ function renderPriceRow(primary, nowPriceUsd, nowPriceInr) {
   const lastReady = primary.last_ready;
   let lastBlock = '';
   if (lastReady) {
-    const lastLineText = `Last predicted price: ${formatDualPrice(lastReady.predicted_price, lastFxRate)} (${formatMatch(lastReady)})`;
+    const lastLineText = `Last matched prediction: ${formatDualPrice(lastReady.predicted_price, lastFxRate)} (${formatMatchPercent(lastReady)})${formatDiffHtml(lastReady)}`;
     const actualLineText = lastReady.actual_price !== null && lastReady.actual_price !== undefined
       ? `Actual price at match time: ${formatDualPrice(lastReady.actual_price, lastFxRate)}`
       : 'Actual price at match time: --';
@@ -275,7 +295,7 @@ function renderPriceRow(primary, nowPriceUsd, nowPriceInr) {
     if (lastReady) {
       const actualTime = lastReady.actual_at ? `at ${fmtDateTimeLower(lastReady.actual_at)}` : '';
       if (lastLine) {
-        lastLine.textContent = `Last predicted price: ${formatDualPrice(lastReady.predicted_price, lastFxRate)} (${formatMatch(lastReady)})`;
+        lastLine.innerHTML = `Last matched prediction: ${formatDualPrice(lastReady.predicted_price, lastFxRate)} (${formatMatchPercent(lastReady)})${formatDiffHtml(lastReady)}`;
       }
       if (actualLine) {
         const actualText = lastReady.actual_price !== null && lastReady.actual_price !== undefined
@@ -284,7 +304,7 @@ function renderPriceRow(primary, nowPriceUsd, nowPriceInr) {
         actualLine.textContent = `${actualText}${actualTime ? ' ' + actualTime : ''}`;
       }
     } else {
-      if (lastLine) lastLine.textContent = 'Last predicted price: --';
+      if (lastLine) lastLine.textContent = 'Last matched prediction: --';
       if (actualLine) actualLine.textContent = 'Actual price at match time: --';
     }
     if (predList) predList.style.display = 'none';
@@ -294,7 +314,7 @@ function renderPriceRow(primary, nowPriceUsd, nowPriceInr) {
       <span class="price-left">Predicted (${label || `${horizonMin}m`}): ${predDisplay} | Match: ${match}</span>
       <span class="price-right">${lastBlock ? lastBlock.replace('\\n', ' | ') : ''}</span>
     `;
-    if (lastLine) lastLine.textContent = 'Last predicted price: --';
+    if (lastLine) lastLine.textContent = 'Last matched prediction: --';
     if (actualLine) actualLine.textContent = 'Actual price at match time: --';
     if (predList) predList.style.display = '';
   }
@@ -324,10 +344,10 @@ function renderPredList(predictions) {
       : '--';
     const match = statusText(pred);
 
-    let lastBlock = 'Last predicted: -- | Actual: --';
+    let lastBlock = 'Last matched: -- | Actual: --';
     if (pred.last_ready) {
       const lr = pred.last_ready;
-      const lastLine = `Last predicted: ${formatDualPrice(lr.predicted_price, lastFxRate)} (${formatMatch(lr)})`;
+      const lastLine = `Last matched: ${formatDualPrice(lr.predicted_price, lastFxRate)} (${formatMatchPercent(lr)})${formatDiffHtml(lr)}`;
       const actualLine = lr.actual_price !== null && lr.actual_price !== undefined
         ? `Actual: ${formatDualPrice(lr.actual_price, lastFxRate)}`
         : 'Actual: --';
@@ -415,6 +435,11 @@ async function loadPrice() {
 async function loadSummary() {
   try {
     const data = await getJSON('/api/btc/tournament/summary');
+    const summaryRunAt = data.last_run_at || null;
+    if (summaryRunAt && summaryRunAt !== lastSummaryRunAt) {
+      lastSummaryRunAt = summaryRunAt;
+      loadScoreboard();
+    }
     const candidateCount = data.candidate_count || 0;
     document.getElementById('candidate-count').textContent = `${candidateCount} models`;
     document.getElementById('last-run').textContent = `Last run: ${fmtDateTime(data.last_run_at)}`;
@@ -524,6 +549,11 @@ async function loadPrediction() {
   }
 }
 
+async function refreshPredictionAndLoad() {
+  await refreshPrediction();
+  await loadPrediction();
+}
+
 async function runNow() {
   const button = document.getElementById('run-now');
   const state = document.getElementById('run-state');
@@ -583,8 +613,8 @@ function updateCountdownOnly() {
 async function init() {
   await loadSummary();
   await loadScoreboard();
-  await refreshPrediction();
-  await loadPrediction();
+  await loadPrice();
+  await refreshPredictionAndLoad();
   await pollRunStatus();
 
   document.getElementById('run-now').addEventListener('click', runNow);
@@ -602,8 +632,7 @@ async function init() {
   }
 
   setInterval(loadPrice, PRICE_POLL_MS);
-  setInterval(loadPrediction, PREDICTION_POLL_MS);
-  setInterval(refreshPrediction, REFRESH_POLL_MS);
+  setInterval(refreshPredictionAndLoad, PREDICTION_POLL_MS);
   setInterval(loadSummary, SUMMARY_POLL_MS);
   setInterval(loadScoreboard, SCOREBOARD_POLL_MS);
   setInterval(pollRunStatus, RUN_STATUS_POLL_MS);
