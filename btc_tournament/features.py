@@ -149,6 +149,54 @@ def feature_sets(df: pd.DataFrame) -> dict:
         "vwap_24",
         "vwap_dist",
     ]
+    trend = [
+        "macd",
+        "macd_signal",
+        "macd_hist",
+        "trend_flag",
+        "range_flag",
+        "bb_width",
+        "vwap_dist",
+        "atr_14",
+    ]
+    volatility = [
+        "vol_24",
+        "bb_width",
+        "atr_14",
+        "roll_std_4",
+        "roll_std_12",
+        "roll_std_24",
+        "z_4",
+        "z_12",
+        "z_24",
+        "high_vol_flag",
+        "low_vol_flag",
+    ]
+    long = [
+        "ret_24h",
+        "roll_mean_24",
+        "roll_mean_72",
+        "roll_mean_168",
+        "z_24",
+        "z_72",
+        "z_168",
+        "vwap_24",
+        "vwap_dist",
+        "vol_24",
+    ]
+    signal = [
+        "ret_1c",
+        "ret_1h",
+        "ret_4h",
+        "ret_24h",
+        "roll_mean_4",
+        "roll_mean_12",
+        "roll_mean_24",
+        "macd",
+        "macd_hist",
+        "rsi_14",
+        "rsi_21",
+    ]
     minimal = ["ret_1c", "ret_1h", "ret_4h", "ret_24h"]
 
     sets = {
@@ -156,6 +204,10 @@ def feature_sets(df: pd.DataFrame) -> dict:
         "vol": vol,
         "momentum": momentum,
         "volume": volume,
+        "trend": trend,
+        "volatility": volatility,
+        "long": long,
+        "signal": signal,
         "minimal": minimal,
     }
 

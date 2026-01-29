@@ -95,15 +95,15 @@ def _sklearn_candidates(task: str) -> List[ModelSpec]:
         return specs
 
     if task == "direction":
-        for c in [0.05, 0.1, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0]:
+        for c in [0.02, 0.05, 0.1, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0]:
             specs.append(ModelSpec(f"logreg_l2_c{c}", LogisticRegression(max_iter=1000, C=c), task, {"family": "logreg", "group": "fast"}))
-        for alpha in [0.5, 1.0, 2.0]:
+        for alpha in [0.1, 0.5, 1.0, 2.0, 5.0]:
             specs.append(ModelSpec(f"ridge_clf_a{alpha}", RidgeClassifier(alpha=alpha), task, {"family": "ridge", "group": "fast"}))
-        for n in [3, 5, 9]:
+        for n in [3, 5, 9, 15, 21, 31]:
             specs.append(ModelSpec(f"knn_{n}", KNeighborsClassifier(n_neighbors=n, weights="distance"), task, {"family": "knn", "group": "fast"}))
-        for n, lr in [(200, 0.5), (400, 0.3)]:
+        for n, lr in [(200, 0.5), (400, 0.3), (600, 0.2), (800, 0.1)]:
             specs.append(ModelSpec(f"ada_clf_{n}_{lr}", AdaBoostClassifier(n_estimators=n, learning_rate=lr), task, {"family": "ada", "group": "fast"}))
-        for alpha in [1e-5, 1e-4, 5e-4, 1e-3, 5e-3, 1e-2, 5e-2]:
+        for alpha in [1e-6, 1e-5, 1e-4, 5e-4, 1e-3, 5e-3, 1e-2, 5e-2, 1e-1]:
             specs.append(ModelSpec(f"sgd_log_a{alpha}", SGDClassifier(loss="log_loss", alpha=alpha), task, {"family": "sgd", "group": "fast"}))
         for n, d in [
             (200, None),
@@ -113,6 +113,8 @@ def _sklearn_candidates(task: str) -> List[ModelSpec]:
             (600, 8),
             (800, 10),
             (1000, 12),
+            (1200, None),
+            (800, 6),
         ]:
             specs.append(ModelSpec(f"rf_{n}_{d}", RandomForestClassifier(n_estimators=n, max_depth=d), task, {"family": "rf", "group": "medium"}))
         for n, d in [
@@ -122,27 +124,29 @@ def _sklearn_candidates(task: str) -> List[ModelSpec]:
             (400, 8),
             (600, 10),
             (800, 12),
+            (1000, None),
+            (800, 8),
         ]:
             specs.append(ModelSpec(f"et_{n}_{d}", ExtraTreesClassifier(n_estimators=n, max_depth=d), task, {"family": "et", "group": "medium"}))
-        for n, lr in [(100, 0.1), (200, 0.1), (300, 0.05), (400, 0.05), (500, 0.03), (600, 0.03)]:
+        for n, lr in [(100, 0.1), (200, 0.1), (300, 0.05), (400, 0.05), (500, 0.03), (600, 0.03), (700, 0.03), (800, 0.02)]:
             specs.append(ModelSpec(f"gb_{n}_{lr}", GradientBoostingClassifier(n_estimators=n, learning_rate=lr), task, {"family": "gb", "group": "fast"}))
-        for n in [100, 200, 300, 400, 500, 600]:
+        for n in [100, 200, 300, 400, 500, 600, 700, 800]:
             specs.append(ModelSpec(f"hgb_{n}", HistGradientBoostingClassifier(max_iter=n), task, {"family": "hgb", "group": "fast"}))
 
     if task == "return":
-        for alpha in [1e-5, 1e-4, 5e-4, 1e-3, 5e-3, 1e-2, 5e-2]:
+        for alpha in [1e-6, 1e-5, 1e-4, 5e-4, 1e-3, 5e-3, 1e-2, 5e-2, 1e-1]:
             specs.append(ModelSpec(f"sgd_reg_a{alpha}", SGDRegressor(alpha=alpha), task, {"family": "sgd", "group": "fast"}))
-        for alpha in [0.5, 1.0, 2.0]:
+        for alpha in [0.1, 0.5, 1.0, 2.0, 5.0]:
             specs.append(ModelSpec(f"ridge_reg_a{alpha}", Ridge(alpha=alpha), task, {"family": "ridge", "group": "fast"}))
-        for alpha in [1e-4, 5e-4]:
+        for alpha in [1e-4, 5e-4, 1e-3]:
             specs.append(ModelSpec(f"lasso_a{alpha}", Lasso(alpha=alpha, max_iter=2000), task, {"family": "lasso", "group": "fast"}))
-        for alpha, l1 in [(1e-4, 0.2), (5e-4, 0.5)]:
+        for alpha, l1 in [(1e-4, 0.2), (5e-4, 0.5), (1e-3, 0.7)]:
             specs.append(ModelSpec(f"enet_a{alpha}_l1{l1}", ElasticNet(alpha=alpha, l1_ratio=l1, max_iter=2000), task, {"family": "enet", "group": "fast"}))
-        for n in [3, 5, 9]:
+        for n in [3, 5, 9, 15, 21, 31]:
             specs.append(ModelSpec(f"knn_reg_{n}", KNeighborsRegressor(n_neighbors=n, weights="distance"), task, {"family": "knn", "group": "fast"}))
-        for c in [0.5, 1.0]:
+        for c in [0.5, 1.0, 2.0]:
             specs.append(ModelSpec(f"lsvr_c{c}", LinearSVR(C=c, epsilon=0.0005, max_iter=3000), task, {"family": "svr", "group": "fast"}))
-        for n, lr in [(200, 0.5), (400, 0.3)]:
+        for n, lr in [(200, 0.5), (400, 0.3), (600, 0.2), (800, 0.1)]:
             specs.append(ModelSpec(f"ada_reg_{n}_{lr}", AdaBoostRegressor(n_estimators=n, learning_rate=lr), task, {"family": "ada", "group": "fast"}))
         for n, d in [
             (200, None),
@@ -152,6 +156,8 @@ def _sklearn_candidates(task: str) -> List[ModelSpec]:
             (600, 8),
             (800, 10),
             (1000, 12),
+            (1200, None),
+            (800, 6),
         ]:
             specs.append(ModelSpec(f"rf_reg_{n}_{d}", RandomForestRegressor(n_estimators=n, max_depth=d), task, {"family": "rf", "group": "medium"}))
         for n, d in [
@@ -161,17 +167,19 @@ def _sklearn_candidates(task: str) -> List[ModelSpec]:
             (400, 8),
             (600, 10),
             (800, 12),
+            (1000, None),
+            (800, 8),
         ]:
             specs.append(ModelSpec(f"et_reg_{n}_{d}", ExtraTreesRegressor(n_estimators=n, max_depth=d), task, {"family": "et", "group": "medium"}))
-        for n, lr in [(200, 0.1), (300, 0.1), (400, 0.05), (500, 0.05), (600, 0.03), (700, 0.03)]:
+        for n, lr in [(200, 0.1), (300, 0.1), (400, 0.05), (500, 0.05), (600, 0.03), (700, 0.03), (800, 0.02)]:
             specs.append(ModelSpec(f"gbr_{n}_{lr}", GradientBoostingRegressor(n_estimators=n, learning_rate=lr), task, {"family": "gb", "group": "fast"}))
-        for n in [200, 300, 400, 500, 600, 700]:
+        for n in [200, 300, 400, 500, 600, 700, 800]:
             specs.append(ModelSpec(f"hgb_{n}", HistGradientBoostingRegressor(max_iter=n), task, {"family": "hgb", "group": "fast"}))
 
     if task == "range":
-        for n in [100, 200, 300, 400, 500, 600, 800]:
+        for n in [100, 200, 300, 400, 500, 600, 800, 900, 1000]:
             specs.append(ModelSpec(f"gbr_q_{n}", GradientBoostingRegressor(n_estimators=n), task, {"quantile": True, "family": "gbr_q", "group": "fast"}))
-        for n in [100, 200, 300, 400, 500, 600, 800]:
+        for n in [100, 200, 300, 400, 500, 600, 800, 900, 1000]:
             specs.append(ModelSpec(f"hgb_q_{n}", HistGradientBoostingRegressor(max_iter=n), task, {"quantile": True, "family": "hgb_q", "group": "fast"}))
     return specs
 
@@ -181,7 +189,12 @@ def _optional_boosters(task: str) -> List[ModelSpec]:
     if task == "direction":
         try:
             import xgboost as xgb  # type: ignore
-            for n, d, lr in [(200, 3, 0.1), (400, 4, 0.05), (600, 5, 0.05)]:
+            for n, d, lr in [
+                (200, 3, 0.1),
+                (400, 4, 0.05),
+                (600, 5, 0.05),
+                (800, 6, 0.03),
+            ]:
                 specs.append(
                     ModelSpec(
                         f"xgb_clf_{n}_d{d}_lr{lr}",
@@ -200,7 +213,12 @@ def _optional_boosters(task: str) -> List[ModelSpec]:
             pass
         try:
             import lightgbm as lgb  # type: ignore
-            for n, lr, leaves in [(200, 0.1, 31), (400, 0.05, 31), (600, 0.05, 63)]:
+            for n, lr, leaves in [
+                (200, 0.1, 31),
+                (400, 0.05, 31),
+                (600, 0.05, 63),
+                (800, 0.03, 63),
+            ]:
                 specs.append(
                     ModelSpec(
                         f"lgb_clf_{n}_lr{lr}_l{leaves}",
@@ -213,7 +231,7 @@ def _optional_boosters(task: str) -> List[ModelSpec]:
             pass
         try:
             from catboost import CatBoostClassifier  # type: ignore
-            for n, d, lr in [(300, 6, 0.1), (600, 8, 0.05)]:
+            for n, d, lr in [(300, 6, 0.1), (600, 8, 0.05), (900, 10, 0.03)]:
                 specs.append(
                     ModelSpec(
                         f"cat_clf_{n}_d{d}_lr{lr}",
@@ -227,7 +245,12 @@ def _optional_boosters(task: str) -> List[ModelSpec]:
     if task == "return":
         try:
             import xgboost as xgb  # type: ignore
-            for n, d, lr in [(200, 3, 0.1), (400, 4, 0.05), (600, 5, 0.05)]:
+            for n, d, lr in [
+                (200, 3, 0.1),
+                (400, 4, 0.05),
+                (600, 5, 0.05),
+                (800, 6, 0.03),
+            ]:
                 specs.append(
                     ModelSpec(
                         f"xgb_reg_{n}_d{d}_lr{lr}",
@@ -246,7 +269,12 @@ def _optional_boosters(task: str) -> List[ModelSpec]:
             pass
         try:
             import lightgbm as lgb  # type: ignore
-            for n, lr, leaves in [(200, 0.1, 31), (400, 0.05, 31), (600, 0.05, 63)]:
+            for n, lr, leaves in [
+                (200, 0.1, 31),
+                (400, 0.05, 31),
+                (600, 0.05, 63),
+                (800, 0.03, 63),
+            ]:
                 specs.append(
                     ModelSpec(
                         f"lgb_reg_{n}_lr{lr}_l{leaves}",
@@ -259,7 +287,7 @@ def _optional_boosters(task: str) -> List[ModelSpec]:
             pass
         try:
             from catboost import CatBoostRegressor  # type: ignore
-            for n, d, lr in [(300, 6, 0.1), (600, 8, 0.05)]:
+            for n, d, lr in [(300, 6, 0.1), (600, 8, 0.05), (900, 10, 0.03)]:
                 specs.append(
                     ModelSpec(
                         f"cat_reg_{n}_d{d}_lr{lr}",
@@ -273,7 +301,13 @@ def _optional_boosters(task: str) -> List[ModelSpec]:
     if task == "range":
         try:
             import lightgbm as lgb  # type: ignore
-            for n, lr, leaves in [(200, 0.1, 31), (400, 0.05, 31), (600, 0.05, 63)]:
+            for n, lr, leaves in [
+                (200, 0.1, 31),
+                (400, 0.05, 31),
+                (600, 0.05, 63),
+                (800, 0.03, 63),
+                (1000, 0.03, 63),
+            ]:
                 specs.append(
                     ModelSpec(
                         f"lgb_q_{n}_lr{lr}_l{leaves}",
