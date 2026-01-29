@@ -213,6 +213,20 @@ function formatCountdown(predictedAt, horizonMin) {
   return `${mm}:${ss}`;
 }
 
+function formatNextMatchLabel(predictedAt, horizonMin) {
+  if (!predictedAt || !horizonMin) return 'Next match in --:--';
+  const start = new Date(predictedAt).getTime();
+  if (Number.isNaN(start)) return `Next match in ${formatCountdown(predictedAt, horizonMin)}`;
+  const target = new Date(start + horizonMin * 60 * 1000);
+  const timeLabel = target.toLocaleTimeString('en-IN', {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: true,
+  });
+  return `Next match in ${formatCountdown(predictedAt, horizonMin)} (${timeLabel})`;
+}
+
 function statusText(pred) {
   if (!pred) return '--';
   if (pred.match_percent_precise !== null && pred.match_percent_precise !== undefined) {
@@ -223,7 +237,7 @@ function statusText(pred) {
   }
   if (pred.status === 'pending') {
     const horizonMin = predictionMinutes(pred);
-    return `Next match in ${formatCountdown(pred.predicted_at, horizonMin)}`;
+    return formatNextMatchLabel(pred.predicted_at, horizonMin);
   }
   if (pred.status && pred.status !== 'ready') {
     return pred.status.replace('_', ' ');
@@ -280,8 +294,8 @@ function renderPriceRow(primary, nowPriceUsd, nowPriceInr) {
   if (lastReady) {
     const lastLineText = `Last matched prediction: ${formatDualPrice(lastReady.predicted_price, lastFxRate)} (${formatMatchPercent(lastReady)})${formatDiffHtml(lastReady)}`;
     const actualLineText = lastReady.actual_price !== null && lastReady.actual_price !== undefined
-      ? `Actual price at match time: ${formatDualPrice(lastReady.actual_price, lastFxRate)}`
-      : 'Actual price at match time: --';
+      ? `Last match actual price: ${formatDualPrice(lastReady.actual_price, lastFxRate)}`
+      : 'Last match actual price: --';
     const actualTime = lastReady.actual_at ? `at ${fmtDateTimeLower(lastReady.actual_at)}` : '';
     lastBlock = `${lastLineText}\n${actualLineText}${actualTime ? ' ' + actualTime : ''}`;
   }
@@ -299,8 +313,8 @@ function renderPriceRow(primary, nowPriceUsd, nowPriceInr) {
       }
       if (actualLine) {
         const actualText = lastReady.actual_price !== null && lastReady.actual_price !== undefined
-          ? `Actual price at match time: ${formatDualPrice(lastReady.actual_price, lastFxRate)}`
-          : 'Actual price at match time: --';
+          ? `Last match actual price: ${formatDualPrice(lastReady.actual_price, lastFxRate)}`
+          : 'Last match actual price: --';
         actualLine.textContent = `${actualText}${actualTime ? ' ' + actualTime : ''}`;
       }
     } else {
