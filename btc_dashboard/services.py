@@ -612,7 +612,21 @@ def _get_recent_bias(config: TournamentConfig, timeframe: str) -> float:
             errors.append(err)
     if not errors:
         return 0.0
-    bias = float(np.mean(errors))
+    strategy = os.getenv("BIAS_STRATEGY", "trimmed").strip().lower()
+    if strategy == "median":
+        bias = float(np.median(errors))
+    elif strategy == "mean":
+        bias = float(np.mean(errors))
+    else:
+        # Trim 10% extremes for stability, fallback to median for small samples.
+        errors.sort()
+        n = len(errors)
+        trim = int(n * 0.1)
+        if n >= 10 and trim > 0 and (n - 2 * trim) > 0:
+            trimmed = errors[trim:-trim]
+            bias = float(np.mean(trimmed)) if trimmed else float(np.median(errors))
+        else:
+            bias = float(np.median(errors))
     max_abs = float(config.bias_max_abs)
     if max_abs > 0:
         bias = max(-max_abs, min(max_abs, bias))
