@@ -84,6 +84,17 @@ function fmtDateTimeLower(iso) {
   return text.replace(' AM', ' am').replace(' PM', ' pm');
 }
 
+function fmtTimeOnly(iso) {
+  if (!iso) return '--';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleTimeString('en-IN', {
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: true,
+  });
+}
+
 function formatElapsed(ms) {
   if (!ms || ms < 0) return '--';
   const total = Math.floor(ms / 1000);
@@ -459,13 +470,9 @@ async function loadSummary() {
     document.getElementById('last-run').textContent = `Last run: ${fmtDateTime(data.last_run_at)}`;
     document.getElementById('last-completed').textContent = `Last tournament completed: ${fmtDateTimeLower(data.last_run_at)}`;
     document.getElementById('run-mode').textContent = `mode: ${data.run_mode || '--'}`;
-    const eta = document.getElementById('run-eta');
-    if (eta) {
-      if (data.eta_seconds) {
-        eta.textContent = formatEtaSeconds(data.eta_seconds);
-      } else {
-        eta.textContent = expectedTimeLabel(candidateCount);
-      }
+    const next = document.getElementById('run-next');
+    if (next) {
+      next.textContent = `Next: ${fmtTimeOnly(data.next_run_at)}`;
     }
 
     const champs = data.champions || {};

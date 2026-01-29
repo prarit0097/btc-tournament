@@ -46,6 +46,8 @@ _RUN_STATE = {"running": False, "last_started_at": None}
 _RUN_STATE_PATH = Path("data") / "run_state.json"
 _PRICE_CACHE: Dict[str, Any] = {}
 _FX_CACHE: Dict[str, Any] = {}
+_TOURNAMENT_INTERVAL_MIN = int(os.getenv("TOURNAMENT_INTERVAL_MINUTES", "120"))
+_TOURNAMENT_START_MIN = int(os.getenv("TOURNAMENT_SCHEDULE_MINUTE", "1"))
 
 
 def _parse_iso(value: Optional[str]) -> Optional[datetime]:
@@ -73,6 +75,18 @@ def _read_run_state_file() -> Optional[Dict[str, Any]]:
     except Exception:
         return None
     return None
+
+
+def _next_scheduled_time_local(now_local: datetime) -> datetime:
+    interval = max(1, int(_TOURNAMENT_INTERVAL_MIN))
+    minute = max(0, min(59, int(_TOURNAMENT_START_MIN)))
+    base = now_local.replace(hour=0, minute=minute, second=0, microsecond=0)
+    if base > now_local:
+        return base
+    next_time = base
+    while next_time <= now_local:
+        next_time = next_time + timedelta(minutes=interval)
+    return next_time
 
 
 def _load_registry(path: Path) -> Dict[str, Any]:
@@ -376,12 +390,15 @@ def get_tournament_summary(config: TournamentConfig) -> Dict[str, Any]:
                 run_at = file_ts
     candidate_count = latest_run["candidate_count"] if latest_run else 0
     eta_seconds = _estimate_eta_seconds(tf_cfg, candidate_count)
+    now_local = datetime.now().astimezone()
+    next_run_local = _next_scheduled_time_local(now_local)
     return {
         "last_run_at": run_at,
         "run_mode": latest_run["run_mode"] if latest_run else None,
         "candidate_count": candidate_count,
         "champions": reg.get("champions", {}),
         "eta_seconds": eta_seconds,
+        "next_run_at": next_run_local.isoformat(),
     }
 
 
