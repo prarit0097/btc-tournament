@@ -336,8 +336,6 @@ def run_tournament(config: TournamentConfig) -> Dict[str, Any]:
         registry = load_registry(config.registry_path)
 
         results: Dict[str, Any] = {"coverage": coverage}
-        run_finished_at = datetime.now(timezone.utc)
-        run_at = run_finished_at.isoformat()
 
         run_mode = _resolve_run_mode(config)
 
@@ -566,6 +564,8 @@ def run_tournament(config: TournamentConfig) -> Dict[str, Any]:
                     }
                 )
 
+        run_finished_at = datetime.now(timezone.utc)
+        run_at = run_finished_at.isoformat()
         save_registry(config.registry_path, registry)
         try:
             duration_seconds = (run_finished_at - run_started_at).total_seconds()
