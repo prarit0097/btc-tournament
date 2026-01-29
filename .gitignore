@@ -8,6 +8,7 @@ __pycache__/
 
 # Virtual env
 .venv/
+.venv311/
 
 # Env files
 .env
@@ -17,6 +18,7 @@ __pycache__/
 
 # Data/artifacts
 /data/
+catboost_info/
 
 # Logs
 *.log
