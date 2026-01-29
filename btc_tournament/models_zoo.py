@@ -177,9 +177,9 @@ def _sklearn_candidates(task: str) -> List[ModelSpec]:
             specs.append(ModelSpec(f"hgb_{n}", HistGradientBoostingRegressor(max_iter=n), task, {"family": "hgb", "group": "fast"}))
 
     if task == "range":
-        for n in [100, 200, 300, 400, 500, 600, 800, 900, 1000]:
+        for n in [50, 80, 120, 160, 200, 240, 300, 360, 420, 500, 600, 700, 800, 900, 1000, 1100, 1200, 1300]:
             specs.append(ModelSpec(f"gbr_q_{n}", GradientBoostingRegressor(n_estimators=n), task, {"quantile": True, "family": "gbr_q", "group": "fast"}))
-        for n in [100, 200, 300, 400, 500, 600, 800, 900, 1000]:
+        for n in [50, 80, 120, 160, 200, 240, 300, 360, 420, 500, 600, 700, 800, 900, 1000, 1100, 1200, 1300]:
             specs.append(ModelSpec(f"hgb_q_{n}", HistGradientBoostingRegressor(max_iter=n), task, {"quantile": True, "family": "hgb_q", "group": "fast"}))
     return specs
 

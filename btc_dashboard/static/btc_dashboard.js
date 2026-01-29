@@ -6,7 +6,7 @@ let lastFxRate = null;
 let lastFxUpdatedAt = null;
 let lastFxSource = null;
 let lastForcedRefreshAt = 0;
-let runState = { running: false, last_started_at: null };
+let runState = { running: false, last_started_at: null, progress: null };
 let lastSummaryRunAt = null;
 
 const PRICE_POLL_MS = 30000;
@@ -132,6 +132,28 @@ function renderRunTimer() {
   }
 }
 
+function renderProgress(state) {
+  const el = document.getElementById('run-progress');
+  if (!el) return;
+  if (!state?.running) {
+    el.style.display = 'none';
+    return;
+  }
+  const progress = state?.progress;
+  const total = progress?.total;
+  const done = progress?.done;
+  const task = progress?.task;
+  if (!total || total <= 0) {
+    el.style.display = 'none';
+    return;
+  }
+  el.style.display = '';
+  const safeDone = Math.max(0, Math.min(Number(done) || 0, total));
+  const pct = Math.round((safeDone / total) * 100);
+  const taskLabel = task ? ` | ${task}` : '';
+  el.textContent = `Progress: ${safeDone}/${total} (${pct}%)${taskLabel}`;
+}
+
 function expectedTimeLabel(candidateCount) {
   if (!candidateCount || candidateCount <= 0) return 'Expected: --';
   if (candidateCount >= 200) return 'Expected: ~15-30 min';
@@ -150,6 +172,7 @@ function updateRunState(state) {
   if (!state) return;
   runState.running = !!state.running;
   runState.last_started_at = state.last_started_at || runState.last_started_at;
+  runState.progress = state.progress || runState.progress;
 
   if (runState.running) {
     if (runState.last_started_at) {
@@ -180,6 +203,7 @@ function updateRunState(state) {
     }
   }
   renderRunTimer();
+  renderProgress(runState);
 }
 
 function normalizePredictions(data) {

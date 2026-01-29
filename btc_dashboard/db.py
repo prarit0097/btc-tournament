@@ -353,6 +353,35 @@ def get_scores(run_id: int, limit: int = 500) -> List[Dict[str, Any]]:
     return results
 
 
+def get_champions(run_id: int) -> Dict[str, Dict[str, Any]]:
+    ensure_tables()
+    with connect() as con:
+        cur = con.execute(
+            """
+            SELECT target, model_name, feature_set, final_score
+            FROM tournament_scores
+            WHERE run_id = ? AND is_champion = 1
+            """,
+            (run_id,),
+        )
+        rows = cur.fetchall()
+    champions: Dict[str, Dict[str, Any]] = {}
+    for r in rows:
+        target = r[0]
+        model_name = r[1]
+        feature_set = r[2]
+        model_id = model_name
+        if feature_set:
+            model_id = f"{model_name}__{feature_set}"
+        champions[target] = {
+            "model_id": model_id,
+            "model_name": model_name,
+            "feature_set_id": feature_set,
+            "final_score": r[3],
+        }
+    return champions
+
+
 def get_latest_prediction() -> Optional[Dict[str, Any]]:
     ensure_tables()
     with connect() as con:

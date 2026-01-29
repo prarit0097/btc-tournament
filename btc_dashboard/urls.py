@@ -1,9 +1,10 @@
 ﻿from django.urls import path
+from django.views.generic.base import RedirectView
 
 from . import views
 
 urlpatterns = [
-    path('btc/', views.dashboard, name='btc_dashboard'),
+    path('btc/', RedirectView.as_view(url='/', permanent=False), name='btc_dashboard'),
     path('api/btc/price', views.api_price, name='btc_price'),
     path('api/btc/price_at', views.api_price_at, name='btc_price_at'),
     path('api/btc/tournament/summary', views.api_tournament_summary, name='btc_tournament_summary'),

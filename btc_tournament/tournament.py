@@ -43,6 +43,7 @@ def _write_run_state(
     started_at: Optional[str],
     finished_at: Optional[str],
     status: str,
+    progress: Optional[Dict[str, Any]] = None,
 ) -> None:
     payload = {
         "running": bool(running),
@@ -52,6 +53,8 @@ def _write_run_state(
         "updated_at": datetime.now(timezone.utc).isoformat(),
         "source": "tournament",
     }
+    if progress is not None:
+        payload["progress"] = progress
     _RUN_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
     tmp = _RUN_STATE_PATH.with_suffix(".tmp")
     with tmp.open("w", encoding="utf8") as f:
@@ -324,6 +327,12 @@ def run_tournament(config: TournamentConfig) -> Dict[str, Any]:
     run_started_at = datetime.now(timezone.utc)
     _write_run_state(True, run_started_at.isoformat(), None, "running")
     error: Optional[Exception] = None
+    progress_total: Optional[int] = None
+    progress_done = 0
+    progress_failed = 0
+    progress_task: Optional[str] = None
+    progress_last_model: Optional[str] = None
+    last_progress_write: Optional[datetime] = None
 
     try:
         df, coverage = _prep_data(config)
@@ -369,11 +378,40 @@ def run_tournament(config: TournamentConfig) -> Dict[str, Any]:
                 per_task_candidates[spec.task].append((spec, fs_id, cols))
 
         candidate_count_total = sum(len(per_task_candidates[t]) for t in per_task_candidates)
+        progress_total = candidate_count_total
+
+        def _emit_progress(force: bool = False) -> None:
+            nonlocal last_progress_write
+            if progress_total is None:
+                return
+            now = datetime.now(timezone.utc)
+            if not force and last_progress_write is not None:
+                if (now - last_progress_write).total_seconds() < 2.0 and (progress_done % 25) != 0:
+                    return
+            last_progress_write = now
+            _write_run_state(
+                True,
+                run_started_at.isoformat(),
+                None,
+                "running",
+                progress={
+                    "total": progress_total,
+                    "done": progress_done,
+                    "failed": progress_failed,
+                    "task": progress_task,
+                    "last_model": progress_last_model,
+                    "updated_at": now.isoformat(),
+                },
+            )
+
+        _emit_progress(force=True)
         scoreboard_rows = []
 
         for task in ["direction", "return", "range"]:
             candidates = per_task_candidates.get(task, [])
             LOGGER.info("Task %s candidates %d", task, len(candidates))
+            progress_task = task
+            _emit_progress(force=True)
 
             jobs = [(spec, task, fs_id, split.train, split.val, cols, config) for spec, fs_id, cols in candidates]
             task_results = []
@@ -384,24 +422,36 @@ def run_tournament(config: TournamentConfig) -> Dict[str, Any]:
 
             if use_workers > 1:
                 with ProcessPoolExecutor(max_workers=use_workers) as ex:
-                    futures = {ex.submit(_evaluate_candidate, j): j[0] for j in jobs}
+                    futures = {ex.submit(_evaluate_candidate, j): j for j in jobs}
                     for fut in futures:
-                        spec = futures[fut]
+                        job = futures[fut]
+                        spec = job[0]
+                        fs_id = job[2]
                         try:
                             res = fut.result(timeout=config.model_timeout_sec)
                             task_results.append(res)
                         except TimeoutError:
                             LOGGER.info("Timeout: %s", spec.name)
+                            progress_failed += 1
                         except Exception as exc:
                             LOGGER.warning("Failed: %s %s", spec.name, exc)
+                            progress_failed += 1
+                        progress_done += 1
+                        progress_last_model = _model_id(spec, fs_id)
+                        _emit_progress()
             else:
                 for j in jobs:
                     spec = j[0]
+                    fs_id = j[2]
                     try:
                         res = _evaluate_candidate(j)
                         task_results.append(res)
                     except Exception as exc:
                         LOGGER.warning("Failed: %s %s", spec.name, exc)
+                        progress_failed += 1
+                    progress_done += 1
+                    progress_last_model = _model_id(spec, fs_id)
+                    _emit_progress()
 
             if not task_results:
                 LOGGER.warning("No valid models for %s", task)
@@ -567,6 +617,7 @@ def run_tournament(config: TournamentConfig) -> Dict[str, Any]:
 
         run_finished_at = datetime.now(timezone.utc)
         run_at = run_finished_at.isoformat()
+        _emit_progress(force=True)
         for task_key, record in registry.get("ensembles", {}).items():
             if isinstance(record, dict):
                 record["run_at"] = run_at
@@ -604,4 +655,20 @@ def run_tournament(config: TournamentConfig) -> Dict[str, Any]:
     finally:
         finished_at = datetime.now(timezone.utc).isoformat()
         status = "error" if error else "ok"
-        _write_run_state(False, run_started_at.isoformat(), finished_at, status)
+        progress_payload = None
+        if progress_total is not None:
+            progress_payload = {
+                "total": progress_total,
+                "done": progress_done,
+                "failed": progress_failed,
+                "task": progress_task,
+                "last_model": progress_last_model,
+                "updated_at": finished_at,
+            }
+        _write_run_state(
+            False,
+            run_started_at.isoformat(),
+            finished_at,
+            status,
+            progress=progress_payload,
+        )

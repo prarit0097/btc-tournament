@@ -76,6 +76,17 @@
         gap: 16px;
         align-items: center;
       }
+      .status-row {
+        justify-content: space-between;
+        align-items: flex-start;
+      }
+      .status-controls {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        align-items: center;
+        justify-content: flex-end;
+      }
       .kpi {
         font-size: 22px;
         font-weight: 700;
@@ -314,6 +325,7 @@
         .hero { grid-template-columns: 1fr; }
         .price-row { font-size: 16px; }
         .price-row { flex-direction: column; align-items: flex-start; }
+        .status-controls { justify-content: flex-start; }
         .price-bar {
           grid-template-columns: 1fr;
           justify-items: center;
@@ -344,17 +356,20 @@
 
       <div class="grid">
         <div class="card" id="tournament-status">
-          <div class="row">
+          <div class="row status-row">
             <div>
               <div class="muted">Tournament Status</div>
               <div class="kpi" id="candidate-count">--</div>
               <div class="muted" id="last-run">Last run: --</div>
               <div class="muted" id="last-completed">Last tournament completed: --</div>
             </div>
-            <button class="button" id="run-now">Run Tournament Now</button>
-            <span class="pill" id="run-state">idle</span>
-            <span class="pill mono" id="run-timer">Last time: --</span>
-            <span class="pill mono" id="run-next">Next: --</span>
+            <div class="status-controls">
+              <button class="button" id="run-now">Run Tournament Now</button>
+              <span class="pill" id="run-state">idle</span>
+              <span class="pill mono" id="run-timer">Last time: --</span>
+              <span class="pill mono" id="run-progress">Progress: --</span>
+              <span class="pill mono" id="run-next">Next: --</span>
+            </div>
           </div>
           <div class="status-item" id="champ-direction">Direction champion: --</div>
           <div class="status-item" id="champ-return">Return champion: --</div>
@@ -403,6 +418,15 @@
               <option value="vol">vol</option>
               <option value="momentum">momentum</option>
               <option value="volume">volume</option>
+              <option value="trend">trend</option>
+              <option value="volatility">volatility</option>
+              <option value="long">long</option>
+              <option value="signal">signal</option>
+              <option value="price_action">price_action</option>
+              <option value="mean_revert">mean_revert</option>
+              <option value="vwap_flow">vwap_flow</option>
+              <option value="trend_longer">trend_longer</option>
+              <option value="micro_momentum">micro_momentum</option>
               <option value="minimal">minimal</option>
             </select>
             <input id="filter-text" placeholder="Search model name" />

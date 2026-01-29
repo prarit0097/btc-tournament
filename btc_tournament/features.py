@@ -197,6 +197,54 @@ def feature_sets(df: pd.DataFrame) -> dict:
         "rsi_14",
         "rsi_21",
     ]
+    price_action = [
+        "ret_1c",
+        "ret_1h",
+        "ret_4h",
+        "ret_24h",
+        "roll_mean_4",
+        "roll_mean_12",
+        "roll_mean_24",
+        "roll_std_4",
+        "roll_std_12",
+        "roll_std_24",
+    ]
+    mean_revert = [
+        "z_4",
+        "z_12",
+        "z_24",
+        "roll_mean_4",
+        "roll_mean_12",
+        "roll_mean_24",
+        "bb_width",
+    ]
+    vwap_flow = [
+        "vwap_24",
+        "vwap_dist",
+        "vol_chg",
+        "vol_mean_24",
+        "vol_std_24",
+        "ret_1h",
+        "ret_4h",
+    ]
+    trend_longer = [
+        "roll_mean_72",
+        "roll_mean_168",
+        "z_72",
+        "z_168",
+        "macd",
+        "macd_signal",
+        "trend_flag",
+        "range_flag",
+    ]
+    micro_momentum = [
+        "ret_1c",
+        "ret_1h",
+        "roll_mean_4",
+        "roll_std_4",
+        "z_4",
+        "macd_hist",
+    ]
     minimal = ["ret_1c", "ret_1h", "ret_4h", "ret_24h"]
 
     sets = {
@@ -208,6 +256,11 @@ def feature_sets(df: pd.DataFrame) -> dict:
         "volatility": volatility,
         "long": long,
         "signal": signal,
+        "price_action": price_action,
+        "mean_revert": mean_revert,
+        "vwap_flow": vwap_flow,
+        "trend_longer": trend_longer,
+        "micro_momentum": micro_momentum,
         "minimal": minimal,
     }
 

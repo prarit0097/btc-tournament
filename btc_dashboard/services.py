@@ -17,6 +17,7 @@ from btc_tournament.storage import Storage
 
 from .db import (
     ensure_tables,
+    get_champions,
     get_latest_prediction_for_timeframe,
     get_latest_ready_prediction_for_timeframe,
     get_latest_run,
@@ -377,7 +378,6 @@ def get_price_at_timestamp(config: TournamentConfig, value: str) -> Dict[str, An
 def get_tournament_summary(config: TournamentConfig) -> Dict[str, Any]:
     primary_tf = get_primary_timeframe(config)
     tf_cfg = _config_for_timeframe(config, primary_tf)
-    reg = _load_registry(tf_cfg.registry_path)
     latest_run = get_latest_run()
     run_at = latest_run["run_at"] if latest_run else None
     file_state = _read_run_state_file()
@@ -392,11 +392,17 @@ def get_tournament_summary(config: TournamentConfig) -> Dict[str, Any]:
     eta_seconds = _estimate_eta_seconds(tf_cfg, candidate_count)
     now_local = datetime.now().astimezone()
     next_run_local = _next_scheduled_time_local(now_local)
+    champions: Dict[str, Any] = {}
+    if latest_run:
+        champions = get_champions(latest_run["id"])
+    if not champions:
+        reg = _load_registry(tf_cfg.registry_path)
+        champions = reg.get("champions", {}) if isinstance(reg, dict) else {}
     return {
         "last_run_at": run_at,
         "run_mode": latest_run["run_mode"] if latest_run else None,
         "candidate_count": candidate_count,
-        "champions": reg.get("champions", {}),
+        "champions": champions,
         "eta_seconds": eta_seconds,
         "next_run_at": next_run_local.isoformat(),
     }
@@ -913,6 +919,8 @@ def run_status() -> Dict[str, Any]:
 
     if file_state.get("last_finished_at"):
         state["last_finished_at"] = file_state.get("last_finished_at")
+    if file_state.get("progress"):
+        state["progress"] = file_state.get("progress")
 
     started = _parse_iso(state.get("last_started_at"))
     finished = _parse_iso(state.get("last_finished_at"))
