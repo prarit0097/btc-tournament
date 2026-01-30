@@ -491,8 +491,10 @@ async function loadSummary() {
     }
     const candidateCount = data.candidate_count || 0;
     document.getElementById('candidate-count').textContent = `${candidateCount} models`;
-    document.getElementById('last-run').textContent = `Last run: ${fmtDateTime(data.last_run_at)}`;
-    document.getElementById('last-completed').textContent = `Last tournament completed: ${fmtDateTimeLower(data.last_run_at)}`;
+    const lastStarted = data.last_run_started_at || data.last_run_at;
+    const lastFinished = data.last_run_finished_at || data.last_run_at;
+    document.getElementById('last-run').textContent = `Last run: ${fmtDateTime(lastStarted)}`;
+    document.getElementById('last-completed').textContent = `Last tournament completed: ${fmtDateTimeLower(lastFinished)}`;
     document.getElementById('run-mode').textContent = `mode: ${data.run_mode || '--'}`;
     const next = document.getElementById('run-next');
     if (next) {

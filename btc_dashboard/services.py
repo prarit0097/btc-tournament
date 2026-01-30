@@ -380,14 +380,28 @@ def get_tournament_summary(config: TournamentConfig) -> Dict[str, Any]:
     tf_cfg = _config_for_timeframe(config, primary_tf)
     latest_run = get_latest_run()
     run_at = latest_run["run_at"] if latest_run else None
+    run_started_at = latest_run.get("run_started_at") if latest_run else None
+    run_finished_at = latest_run.get("run_finished_at") if latest_run else None
+    if not run_started_at:
+        run_started_at = run_at
+    if not run_finished_at:
+        run_finished_at = run_at
+
     file_state = _read_run_state_file()
     if file_state:
-        file_ts = file_state.get("last_finished_at") or file_state.get("last_started_at")
-        if file_ts:
-            file_dt = _parse_iso(file_ts)
-            run_dt = _parse_iso(run_at)
-            if file_dt and (not run_dt or file_dt > run_dt):
-                run_at = file_ts
+        file_started = file_state.get("last_started_at")
+        file_finished = file_state.get("last_finished_at")
+        if file_finished:
+            file_finish_dt = _parse_iso(file_finished)
+            run_finish_dt = _parse_iso(run_finished_at)
+            if file_finish_dt and (not run_finish_dt or file_finish_dt > run_finish_dt):
+                run_finished_at = file_finished
+                if file_started:
+                    file_start_dt = _parse_iso(file_started)
+                    if file_start_dt and (not file_finish_dt or file_start_dt <= file_finish_dt):
+                        run_started_at = file_started
+        if not run_at:
+            run_at = run_finished_at or run_started_at
     candidate_count = latest_run["candidate_count"] if latest_run else 0
     eta_seconds = _estimate_eta_seconds(tf_cfg, candidate_count)
     now_local = datetime.now().astimezone()
@@ -400,6 +414,8 @@ def get_tournament_summary(config: TournamentConfig) -> Dict[str, Any]:
         champions = reg.get("champions", {}) if isinstance(reg, dict) else {}
     return {
         "last_run_at": run_at,
+        "last_run_started_at": run_started_at,
+        "last_run_finished_at": run_finished_at,
         "run_mode": latest_run["run_mode"] if latest_run else None,
         "candidate_count": candidate_count,
         "champions": champions,
