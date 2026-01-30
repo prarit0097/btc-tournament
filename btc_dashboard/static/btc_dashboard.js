@@ -604,6 +604,7 @@ async function refreshPredictionAndLoad() {
 async function runNow() {
   const button = document.getElementById('run-now');
   const state = document.getElementById('run-state');
+  if (!button || !state) return;
   button.disabled = true;
   state.textContent = 'running...';
   const localStart = new Date().toISOString();
@@ -624,12 +625,13 @@ async function pollRunStatus() {
   try {
     const state = await getJSON('/api/btc/tournament/run/status');
     const badge = document.getElementById('run-state');
+    const runBtn = document.getElementById('run-now');
     if (state.running) {
       badge.textContent = 'running';
-      document.getElementById('run-now').disabled = true;
+      if (runBtn) runBtn.disabled = true;
     } else {
       badge.textContent = 'idle';
-      document.getElementById('run-now').disabled = false;
+      if (runBtn) runBtn.disabled = false;
     }
     updateRunState(state);
   } catch (err) {
@@ -664,7 +666,8 @@ async function init() {
   await refreshPredictionAndLoad();
   await pollRunStatus();
 
-  document.getElementById('run-now').addEventListener('click', runNow);
+  const runNowBtn = document.getElementById('run-now');
+  if (runNowBtn) runNowBtn.addEventListener('click', runNow);
   document.getElementById('filter-target').addEventListener('change', applyFilters);
   document.getElementById('filter-feature').addEventListener('change', applyFilters);
   document.getElementById('filter-text').addEventListener('input', applyFilters);

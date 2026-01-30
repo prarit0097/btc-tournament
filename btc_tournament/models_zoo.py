@@ -1,4 +1,4 @@
-﻿from dataclasses import dataclass
+from dataclasses import dataclass
 from typing import Any, Dict, List, Tuple
 
 import numpy as np
@@ -145,7 +145,7 @@ def _sklearn_candidates(task: str) -> List[ModelSpec]:
         for n in [3, 5, 9, 15, 21, 31]:
             specs.append(ModelSpec(f"knn_reg_{n}", KNeighborsRegressor(n_neighbors=n, weights="distance"), task, {"family": "knn", "group": "fast"}))
         for c in [0.5, 1.0, 2.0]:
-            specs.append(ModelSpec(f"lsvr_c{c}", LinearSVR(C=c, epsilon=0.0005, max_iter=3000), task, {"family": "svr", "group": "fast"}))
+            specs.append(ModelSpec(f"lsvr_c{c}", LinearSVR(C=c, epsilon=0.0005, max_iter=10000), task, {"family": "svr", "group": "fast"}))
         for n, lr in [(200, 0.5), (400, 0.3), (600, 0.2), (800, 0.1)]:
             specs.append(ModelSpec(f"ada_reg_{n}_{lr}", AdaBoostRegressor(n_estimators=n, learning_rate=lr), task, {"family": "ada", "group": "fast"}))
         for n, d in [
